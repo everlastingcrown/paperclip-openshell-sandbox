@@ -17,7 +17,9 @@ try {
   const consumer=path.join(temp,'consumer');
   const {mkdir}=await import('node:fs/promises'); await mkdir(consumer);
   await writeFile(path.join(consumer,'package.json'),JSON.stringify({name:'packed-consumer',private:true,type:'module',dependencies:{[pkg.name]:`file:${tarball}`,'@paperclipai/plugin-sdk':'2026.1005.0','@paperclipai/shared':'2026.1005.0'}}));
-  pm(['install','--offline','--ignore-scripts','--config.node-linker=hoisted'],consumer);
+  // A frozen-lockfile install can cache packages without caching registry metadata.
+  // The fresh consumer has no lockfile, so allow fetching missing metadata.
+  pm(['install','--prefer-offline','--ignore-scripts','--config.node-linker=hoisted'],consumer);
   const installed=path.join(consumer,'node_modules',pkg.name);
   const actual=JSON.parse(await readFile(path.join(installed,'package.json'),'utf8'));
   assert.equal(actual.version,pkg.version);
