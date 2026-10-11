@@ -1,0 +1,179 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { OpenShellProvider } from '../src/provider.js';
+import { parseConfig } from '../src/config.js';
+import { run, MAX_STDIN, MAX_OUTPUT, json, type Runner, type CommandResult } from '../src/cli.js';
+import { readEnvironmentCreationCleanupError, PluginEnvironmentCreationCleanupError } from '@paperclipai/plugin-sdk';
+const config = { gateway: 'test', image: 'runtime:test', timeoutMs: 1000 };
+const base = { driverKey: 'openshell', companyId: 'company', environmentId: 'environment', runId: 'run', config };
+const ok = (stdout = ''): CommandResult => ({ stdout, stderr: '', exitCode: 0, signal: null, timedOut: false });
+function fake(extra: Record<string,unknown> = {}) {
+  const calls: {args:string[]; stdin?:string; timeout:number}[] = [];
+  let record: any;
+  let fail: ((args:string[]) => CommandResult | undefined) | undefined;
+  const runner: Runner = async (_executable,args,timeout,stdin) => {
+    calls.push({args,stdin,timeout});
+    const result = fail?.(args); if (result) return result;
+    const flag = (key:string) => args[args.indexOf(key)+1];
+    if (args.includes('create')) {
+      const labels = Object.fromEntries(args.flatMap((a,index) => a === '--label' ? [args[index+1].split('=')] : []));
+      record = { id: 'sandbox-id', name: flag('--name'), workspace: 'default', phase: 'Ready', labels };
+      return ok(JSON.stringify(record));
+    }
+    if (args.includes('list')) return ok(JSON.stringify({sandboxes:record ? [record] : [], next_page_token:''}));
+    if (args.includes('delete')) record = undefined;
+    if (args.includes('stop')) record.phase = 'Stopped';
+    if (args.includes('start')) record.phase = 'Ready';
+    return ok();
+  };
+  const provider = new OpenShellProvider(runner, 1);
+  return { provider, calls, params:{...base,config:{...config,...extra}}, get record(){return record}, set record(v){record=v}, fail(f:typeof fail){fail=f} };
+}
+const release = (f:ReturnType<typeof fake>, l:any) => ({...f.params,providerLeaseId:l.providerLeaseId,leaseMetadata:l.metadata});
+test('configuration defaults and required fields', () => {
+  assert.deepEqual(parseConfig({gateway:'g',image:'i'}), {executable:'openshell',gateway:'g',workspace:'default',image:'i',policyFile:undefined,providers:[],cpu:undefined,memory:undefined,timeoutMs:300000,reuseLease:false});
+  for (const c of [{image:'i'},{gateway:'g'},{...config,timeoutMs:0},{...config,reuseLease:'yes'},{...config,providers:[4]},{...config,cpu:'bad'},{...config,memory:'bad'},{...config,gateway:'-g'}]) assert.throws(()=>parseConfig(c));
+});
+test('acquisition uses pinned scope, ownership and noninteractive create flags', async () => {
+  const f=fake({providers:['existing'],policyFile:'/policy.yaml',cpu:'500m',memory:'1Gi'}); const l=await f.provider.acquire(f.params);
+  const args=f.calls[0].args;
+  for (const flag of ['--detach','--no-tty','--no-auto-providers','--approval-mode','manual','--output','json','--provider','existing','--policy','/policy.yaml','--cpu','500m','--memory','1Gi']) assert.ok(args.includes(flag));
+  assert.deepEqual(args.slice(0,4),['--gateway','test','--workspace','default']);
+  assert.ok((l.metadata?.openshell as any).labels['paperclip-attempt']); assert.equal(l.providerLeaseId,'sandbox-id');
+});
+test('requested provider expiry rejects before CLI allocation', async()=>{
+  const f=fake(); await assert.rejects(f.provider.acquire({...f.params,requestedExpiresAt:'2030-01-01T00:00:00Z'}),/expiry/); assert.equal(f.calls.length,0);
+});
+test('execution preserves argument boundaries, cwd, env, stdin and outcomes',async()=>{
+  const f=fake(); const l=await f.provider.acquire(f.params);
+  f.fail(args=>args.includes('exec')?{...ok('output'),stderr:'error',exitCode:7}:undefined);
+  const result=await f.provider.execute({...f.params,lease:l,command:'echo',args:['; $(test)','two words'],env:{NAME:'private-value'},cwd:'/custom',stdin:'input',timeoutMs:321});
+  assert.deepEqual(result,{...ok('output'),stderr:'error',exitCode:7});
+  const call=f.calls.at(-1)!; assert.deepEqual(call.args.slice(-4),['--','echo','; $(test)','two words']); assert.equal(call.stdin,'input'); assert.equal(call.timeout,321);
+  assert.ok(call.args.includes('--no-login-shell')); assert.ok(call.args.includes('NAME=private-value')); assert.ok(call.args.includes('/custom'));
+  assert.ok(!JSON.stringify(l).includes('private-value'));
+});
+test('execution reports local and remote timeout',async()=>{
+  const f=fake(); const l=await f.provider.acquire(f.params);
+  for (const outcome of [{...ok(),timedOut:true,exitCode:null},{...ok(),exitCode:124}]) {
+    f.fail(a=>a.includes('exec')?outcome:undefined);
+    assert.equal((await f.provider.execute({...f.params,lease:l,command:'sleep'})).timedOut,true);
+  }
+});
+test('oversized stdin is rejected before invoking CLI',async()=>{
+  const f=fake(); const l=await f.provider.acquire(f.params); const n=f.calls.length;
+  await assert.rejects(f.provider.execute({...f.params,lease:l,command:'cat',stdin:'x'.repeat(MAX_STDIN+1)}),/4 MiB/); assert.equal(f.calls.length,n);
+});
+test('ephemeral release deletes and confirms absence',async()=>{
+  const f=fake(); const l=await f.provider.acquire(f.params);
+  assert.deepEqual(await f.provider.release(release(f,l)),{providerLeaseId:'sandbox-id',state:'destroyed'}); assert.equal(f.record,undefined);
+  assert.equal(f.calls.at(-1)?.args[5],'list');
+});
+test('reuse retains, resumes, stops without deletion, and restarts',async()=>{
+  const f=fake({reuseLease:true}); const l=await f.provider.acquire(f.params); const p=release(f,l);
+  await f.provider.release(p); assert.ok(f.record);
+  assert.deepEqual(await f.provider.resume({...p,providerLeaseId:'sandbox-id'}),l);
+  assert.deepEqual(await f.provider.stop(p),{providerLeaseId:'sandbox-id',state:'stopped'}); assert.ok(!f.calls.some(c=>c.args.includes('delete')));
+  await f.provider.resume({...p,providerLeaseId:'sandbox-id'}); assert.equal(f.record.phase,'Ready');
+  await f.provider.destroy(p); assert.equal(f.record,undefined);
+});
+test('release stop_and_retain preserves an ephemeral lease',async()=>{
+  const f=fake(); const l=await f.provider.acquire(f.params);
+  assert.equal((await f.provider.release({...release(f,l),resourceDisposition:'stop_and_retain'}))?.state,'stopped'); assert.ok(f.record);
+});
+test('failed or unconfirmed stop never substitutes deletion',async()=>{
+  const f=fake(); const l=await f.provider.acquire(f.params);
+  f.fail(a=>a.includes('stop')?{...ok(),exitCode:1}:undefined);
+  await assert.rejects(f.provider.stop(release(f,l))); assert.ok(f.record); assert.ok(!f.calls.some(c=>c.args.includes('delete')));
+  f.fail(a=>a.includes('stop')?ok():undefined);
+  await assert.rejects(f.provider.stop(release(f,l)),/confirmation timed out/); assert.ok(f.record);
+});
+test('missing lease expires; transport or malformed list remains an error',async()=>{
+  const f=fake({reuseLease:true}); const l=await f.provider.acquire(f.params); f.record=undefined;
+  assert.deepEqual(await f.provider.resume({...release(f,l),providerLeaseId:'sandbox-id'}),{providerLeaseId:null,metadata:{expired:true}});
+  for (const result of [{...ok(),exitCode:1},ok('bad json'),ok('{}')]) {
+    f.fail(a=>a.includes('list')?result:undefined);
+    await assert.rejects(f.provider.resume({...release(f,l),providerLeaseId:'sandbox-id'}));
+  }
+});
+test('ownership and scope mismatch blocks resume, execution, stop and destroy',async()=>{
+  const f=fake({reuseLease:true}); const l=await f.provider.acquire(f.params); f.record.id='replacement';
+  for (const action of [()=>f.provider.resume({...release(f,l),providerLeaseId:'sandbox-id'}),()=>f.provider.stop(release(f,l)),()=>f.provider.destroy(release(f,l)),()=>f.provider.execute({...f.params,lease:l,command:'true'})]) await assert.rejects(action,/ownership/);
+  await assert.rejects(f.provider.destroy({...release(f,l),config:{...f.params.config,gateway:'other'}}),/scope/);
+  assert.ok(!f.calls.some(c=>c.args.includes('delete')));
+});
+test('failed runtime check cleans up allocation',async()=>{
+  const f=fake(); f.fail(a=>a.includes('exec')?{...ok(),exitCode:1}:undefined);
+  await assert.rejects(f.provider.acquire(f.params),/cleaned up/); assert.equal(f.record,undefined);
+});
+test('failed cleanup returns SDK structured nonsecret ownership evidence',async()=>{
+  const f=fake(); f.fail(a=>a.includes('exec')||a.includes('delete')?{...ok(),stderr:'secret-token',exitCode:1}:undefined);
+  try { await f.provider.acquire(f.params); assert.fail(); } catch(e) {
+    assert.ok(e instanceof PluginEnvironmentCreationCleanupError);
+    const cleanup=readEnvironmentCreationCleanupError(e)!; assert.ok(cleanup); assert.equal(cleanup.observedProviderLeaseId,'sandbox-id'); assert.ok(!JSON.stringify(e).includes('secret-token'));
+    f.fail(undefined); await f.provider.destroy({...f.params,providerLeaseId:cleanup.providerLeaseId,leaseMetadata:{failedCreateCleanup:cleanup}}); assert.equal(f.record,undefined);
+  }
+});
+test('uncertain creation preserves pending cleanup; observation must be durable before destroy',async()=>{
+  const f=fake(); f.fail(a=>a.includes('create')?ok('malformed'):undefined);
+  let cleanup:any;
+  try {await f.provider.acquire(f.params);} catch(e) {cleanup=readEnvironmentCreationCleanupError(e);}
+  assert.ok(cleanup); assert.equal(cleanup.observedProviderLeaseId,undefined);
+  const p={...f.params,providerLeaseId:cleanup.providerLeaseId,leaseMetadata:{failedCreateCleanup:cleanup}};
+  await assert.rejects(f.provider.destroy(p),PluginEnvironmentCreationCleanupError);
+  f.record={id:'late-id',name:cleanup.providerLeaseId,workspace:'default',phase:'Ready',labels:cleanup.labels};
+  try {await f.provider.destroy(p);} catch(e) {cleanup=readEnvironmentCreationCleanupError(e);}
+  assert.equal(cleanup.observedProviderLeaseId,'late-id'); assert.ok(f.record);
+  await f.provider.destroy({...p,leaseMetadata:{failedCreateCleanup:cleanup}}); assert.equal(f.record,undefined);
+});
+test('JSON and response validation fail closed',()=>{assert.throws(()=>json('not json'),/Malformed/)});
+test('real subprocess closes stdin and preserves output and exit status',async()=>{
+  const result=await run(process.execPath,['-e',"process.stdin.resume(); process.stdin.on('end',()=>{console.log('done');console.error('err');process.exitCode=7})"],2000);
+  assert.equal(result.stdout,'done\n'); assert.equal(result.stderr,'err\n'); assert.equal(result.exitCode,7);
+});
+test('real subprocess timeout and output limits are bounded',async()=>{
+  assert.equal((await run(process.execPath,['-e','setInterval(()=>{},1000)'],50)).timedOut,true);
+  await assert.rejects(run(process.execPath,['-e',`process.stdout.write('x'.repeat(${MAX_OUTPUT+1}))`],2000),/16 MiB/);
+  await assert.rejects(run('/missing/openshell',[],1000),/Unable to start/);
+});
+test('paginated JSON inspection follows tokens and rejects repeated tokens',async()=>{
+  const f=fake({reuseLease:true}); const l=await f.provider.acquire(f.params); let page=0;
+  f.fail(a=>a.includes('list')?ok(JSON.stringify(page++===0?{sandboxes:[],next_page_token:'second'}:{sandboxes:[f.record],next_page_token:''})):undefined);
+  assert.equal((await f.provider.resume({...release(f,l),providerLeaseId:'sandbox-id'})).providerLeaseId,l.providerLeaseId);
+  assert.ok(f.calls.some(c=>c.args.includes('second')));
+  f.fail(a=>a.includes('list')?ok(JSON.stringify({sandboxes:[],next_page_token:'loop'})):undefined);
+  await assert.rejects(f.provider.resume({...release(f,l),providerLeaseId:'sandbox-id'}),/pagination token/);
+});
+test('unconfirmed deletion and acquisition timeout stay structured or fail loudly',async()=>{
+  const f=fake(); const l=await f.provider.acquire(f.params);
+  f.fail(a=>a.includes('delete')?ok():undefined);
+  await assert.rejects(f.provider.destroy(release(f,l)),/confirmation timed out/); assert.ok(f.record);
+  const timeout=fake(); timeout.fail(a=>a.includes('create')?{...ok(),exitCode:null,timedOut:true}:undefined);
+  await assert.rejects(timeout.provider.acquire(timeout.params),PluginEnvironmentCreationCleanupError);
+});
+test('ownership label mismatch and malformed sandbox shapes fail closed',async()=>{
+  const f=fake({reuseLease:true}); const l=await f.provider.acquire(f.params);
+  f.record.labels['paperclip-company']='foreign';
+  await assert.rejects(f.provider.destroy(release(f,l)),/ownership/); assert.ok(f.record);
+  f.record.labels=null;
+  await assert.rejects(f.provider.resume({...release(f,l),providerLeaseId:'sandbox-id'}),/shape/);
+});
+test('turning reuse off expires or destroys retained leases and cancellation terminates',async()=>{
+  const f=fake({reuseLease:true}); const l=await f.provider.acquire(f.params);
+  const p={...release(f,l),config:{...f.params.config,reuseLease:false},providerLeaseId:'sandbox-id'};
+  assert.equal((await f.provider.resume(p)).providerLeaseId,null);
+  assert.equal((await f.provider.release(p))?.state,'destroyed');
+  const g=fake({reuseLease:true}); const kept=await g.provider.acquire(g.params);
+  assert.equal((await g.provider.release({...release(g,kept),cancelActiveWork:true}))?.state,'stopped');
+});
+test('realization uses a remote directory and exposes fallback runtime metadata',async()=>{
+  const f=fake(); const l=await f.provider.acquire(f.params);
+  assert.equal(l.metadata?.remoteCwd,'/sandbox/paperclip-workspace'); assert.equal(l.metadata?.shellCommand,'bash');
+  assert.deepEqual(await f.provider.realize({...f.params,lease:l,workspace:{remotePath:'/sandbox/custom workspace'}}),{cwd:'/sandbox/custom workspace'});
+  await assert.rejects(f.provider.execute({...f.params,lease:l,command:'true',env:{'INVALID=KEY':'x'}}),/environment/);
+});
+test('destroy also honors explicit stop-and-retain disposition',async()=>{
+  const f=fake(); const l=await f.provider.acquire(f.params);
+  assert.equal((await f.provider.destroy({...release(f,l),resourceDisposition:'stop_and_retain'})).state,'stopped'); assert.ok(f.record);
+  assert.ok(!f.calls.some(c=>c.args.includes('delete')));
+});

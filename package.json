@@ -1,0 +1,70 @@
+{
+  "name": "@everlastingcrown/paperclip-openshell-sandbox",
+  "version": "0.0.0",
+  "description": "OpenShell sandbox provider for Paperclip",
+  "license": "MIT",
+  "author": "everlastingcrown",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/everlastingcrown/paperclip-openshell-sandbox"
+  },
+  "type": "module",
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./manifest": {
+      "types": "./dist/manifest.d.ts",
+      "import": "./dist/manifest.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "paperclipPlugin": {
+    "manifest": "dist/manifest.js",
+    "worker": "dist/worker.js"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node scripts/build.mjs",
+    "test": "node --import tsx --test test/*.test.ts",
+    "test:live": "node --import tsx scripts/live-smoke.ts",
+    "check:package": "node scripts/check-package.mjs",
+    "prepublishOnly": "pnpm build"
+  },
+  "peerDependencies": {
+    "@paperclipai/plugin-sdk": "2026.1005.0"
+  },
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "2026.1005.0",
+    "@paperclipai/shared": "2026.1005.0",
+    "@types/node": "24.10.1",
+    "semantic-release": "25.0.5",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "npm": "11.6.2"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "pnpm": {
+    "overrides": {
+      "npm": "11.6.2"
+    }
+  }
+}
