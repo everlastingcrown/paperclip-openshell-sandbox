@@ -1,6 +1,7 @@
 export const remotePath = '/sandbox/paperclip-workspace';
 export interface Config {
   executable: string;
+  configHome?: string;
   gateway: string;
   workspace: string;
   image: string;
@@ -46,12 +47,18 @@ export function parseConfig(raw: Record<string, unknown>): Config {
     throw new Error('Invalid gateway/workspace name');
   const cpu = optional('cpu');
   const memory = optional('memory');
+  const configHome = optional('configHome');
+  if (configHome && !configHome.startsWith('/'))
+    throw new Error(
+      'Invalid configHome (expected absolute XDG config directory)',
+    );
   if (cpu && !/^(?:\d+(?:\.\d+)?|\d+m)$/.test(cpu))
     throw new Error('Invalid cpu');
   if (memory && !/^\d+(?:\.\d+)?(?:[EPTGMK]i?|m|k)?$/.test(memory))
     throw new Error('Invalid memory');
   return {
     executable: str('executable', 'openshell'),
+    configHome,
     gateway,
     workspace,
     image: str('image'),
@@ -69,6 +76,7 @@ export const configSchema = {
   required: ['gateway', 'image'],
   properties: {
     executable: { type: 'string', default: 'openshell' },
+    configHome: { type: 'string', minLength: 1 },
     gateway: { type: 'string', minLength: 1 },
     workspace: { type: 'string', default: 'default' },
     image: { type: 'string', minLength: 1 },

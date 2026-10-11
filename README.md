@@ -29,6 +29,8 @@ openshell --gateway my-gateway --workspace default sandbox list --output json
 
 The worker needs access to the CLI executable, its stored gateway metadata/authentication, and any policy file. Containerized Paperclip installations need those resources inside the host container. A gateway name is mandatory; every command supplies both gateway and workspace. The worker removes `OPENSHELL_GATEWAY_ENDPOINT` from subprocess environments so a host environment variable cannot override the named scope. Keep the gateway name bound to the same gateway while leases exist.
 
+Paperclip starts plugin workers with a minimal environment that does not inherit the server's `HOME` or `XDG_CONFIG_HOME`. If gateway registration uses a custom XDG configuration directory, set `configHome` explicitly in the Environment provider configuration. For example, gateways stored under `/paperclip/.config/openshell/gateways` require `"configHome": "/paperclip/.config"`. This sets `XDG_CONFIG_HOME` for every OpenShell subprocess; the path is the parent of the `openshell` directory. The directory and its gateway authentication files must be accessible to the worker's OS user.
+
 ## Environment configuration
 
 Select a sandbox environment with provider `openshell`, implemented by this plugin. Supply the following provider configuration (Paperclip may also store its own provider-selection fields):
@@ -36,6 +38,7 @@ Select a sandbox environment with provider `openshell`, implemented by this plug
 ```json
 {
   "executable": "openshell",
+  "configHome": "/paperclip/.config",
   "gateway": "my-gateway",
   "workspace": "default",
   "image": "registry.example.com/paperclip-runtime:tested",
@@ -51,6 +54,7 @@ Select a sandbox environment with provider `openshell`, implemented by this plug
 | Field           | Default / behavior                                 |
 | --------------- | -------------------------------------------------- |
 | `executable`    | `openshell`; executable path or PATH name          |
+| `configHome`    | Optional absolute XDG configuration directory      |
 | `gateway`       | Required stable gateway name                       |
 | `workspace`     | `default`; OpenShell resource namespace            |
 | `image`         | Required prebuilt runtime image reference          |
@@ -99,6 +103,8 @@ pnpm test:live
 Without both variables it reports `SKIP`. Ordinary tests require no gateway. Live coverage must be reported separately from unit/contract validation.
 
 For lifecycle failures, run the scoped list/get commands under the Paperclip worker's OS user, verify authentication and gateway access, and inspect the named sandbox's phase and labels. Runtime setup failures usually indicate a missing tool, an exited main process, unwritable workspace, or policy denial. Ownership mismatches require operator investigation; the plugin refuses to control a replacement sandbox. Avoid gateway rebinding or manual name reuse while leases or pending cleanup records exist.
+
+If manual CLI access works but Test Provider fails during allocation with pending reconciliation, first check whether the worker can find the registered gateway. A custom server `XDG_CONFIG_HOME` is not inherited by plugin workers; configure `configHome` as described above. Fixing access does not itself resolve existing uncertain cleanup records. The `curlimages/curl` image used for network isolation checks is not a Paperclip runtime image: it does not satisfy this provider's required runtime tools. Use an image containing the tools listed above and a persistent canonical main process.
 
 ## Releases and npm publisher setup
 

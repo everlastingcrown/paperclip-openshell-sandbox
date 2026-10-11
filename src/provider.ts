@@ -230,6 +230,7 @@ export class OpenShellProvider {
       [...scope(c), 'sandbox', ...flags, '--', command, ...args],
       timeoutMs,
       stdin,
+      c.configHome ? { XDG_CONFIG_HOME: c.configHome } : {},
     );
     // The v0.1.2 CLI exposes remote timeout as exit 124, with no separate flag.
     return { ...result, timedOut: result.timedOut || result.exitCode === 124 };

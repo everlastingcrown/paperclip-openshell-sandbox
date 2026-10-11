@@ -14,18 +14,25 @@ export type Runner = (
   args: string[],
   timeoutMs: number,
   stdin?: string,
+  env?: { XDG_CONFIG_HOME?: string },
 ) => Promise<CommandResult>;
 export function checkStdin(stdin = '') {
   if (Buffer.byteLength(stdin) > MAX_STDIN)
     throw new Error('stdin exceeds OpenShell 4 MiB limit');
 }
-export const run: Runner = async (executable, args, timeoutMs, stdin = '') => {
+export const run: Runner = async (
+  executable,
+  args,
+  timeoutMs,
+  stdin = '',
+  overrides = {},
+) => {
   checkStdin(stdin);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
     throw new Error('Operation deadline exceeded');
   return new Promise((resolve, reject) => {
     // Endpoint overrides would bypass the explicitly selected gateway scope.
-    const env = { ...process.env };
+    const env: NodeJS.ProcessEnv = { ...process.env, ...overrides };
     delete env.OPENSHELL_GATEWAY_ENDPOINT;
     const child = spawn(executable, args, {
       shell: false,
@@ -102,6 +109,8 @@ export async function lifecycle(
     c.executable,
     [...scope(c), 'sandbox', ...args],
     deadline - Date.now(),
+    undefined,
+    c.configHome ? { XDG_CONFIG_HOME: c.configHome } : {},
   );
   if (result.timedOut || result.exitCode !== 0)
     throw new Error(

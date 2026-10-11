@@ -30,11 +30,16 @@ const ok = (stdout = ''): CommandResult => ({
   timedOut: false,
 });
 function fake(extra: Record<string, unknown> = {}) {
-  const calls: { args: string[]; stdin?: string; timeout: number }[] = [];
+  const calls: {
+    args: string[];
+    stdin?: string;
+    timeout: number;
+    env?: { XDG_CONFIG_HOME?: string };
+  }[] = [];
   let record: any;
   let fail: ((args: string[]) => CommandResult | undefined) | undefined;
-  const runner: Runner = async (_executable, args, timeout, stdin) => {
-    calls.push({ args, stdin, timeout });
+  const runner: Runner = async (_executable, args, timeout, stdin, env) => {
+    calls.push({ args, stdin, timeout, env });
     const result = fail?.(args);
     if (result) return result;
     const flag = (key: string) => args[args.indexOf(key) + 1];
@@ -89,6 +94,7 @@ const release = (f: ReturnType<typeof fake>, l: any) => ({
 test('configuration defaults and required fields', () => {
   assert.deepEqual(parseConfig({ gateway: 'g', image: 'i' }), {
     executable: 'openshell',
+    configHome: undefined,
     gateway: 'g',
     workspace: 'default',
     image: 'i',
@@ -108,8 +114,28 @@ test('configuration defaults and required fields', () => {
     { ...config, cpu: 'bad' },
     { ...config, memory: 'bad' },
     { ...config, gateway: '-g' },
+    { ...config, configHome: 'relative/config' },
   ])
     assert.throws(() => parseConfig(c));
+});
+test('explicit config home reaches create, inspect, exec and delete subprocesses', async () => {
+  const f = fake({ configHome: '/paperclip/.config' });
+  const l = await f.provider.acquire(f.params);
+  await f.provider.execute({ ...f.params, lease: l, command: 'true' });
+  await f.provider.destroy(release(f, l));
+  for (const call of f.calls)
+    assert.deepEqual(call.env, { XDG_CONFIG_HOME: '/paperclip/.config' });
+});
+test('real subprocess receives explicit config home', async () => {
+  const result = await run(
+    process.execPath,
+    ['-e', 'process.stdout.write(process.env.XDG_CONFIG_HOME)'],
+    2000,
+    undefined,
+    { XDG_CONFIG_HOME: '/paperclip/.config' },
+  );
+  assert.equal(result.stdout, '/paperclip/.config');
+  assert.equal(result.exitCode, 0);
 });
 test('acquisition uses pinned scope, ownership and noninteractive create flags', async () => {
   const f = fake({
