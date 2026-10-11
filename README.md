@@ -17,7 +17,7 @@ pnpm build
 pnpm check:package
 ```
 
-Installing development dependencies enables Husky Git hooks. Before each commit, lint-staged runs ESLint with automatic fixes on staged JavaScript and TypeScript files and stages the fixes. Before each push, the hook runs `pnpm test` (unit and contract tests; no live sandbox required). You can also run `pnpm lint:fix` to apply lint fixes across the project.
+Installing development dependencies enables Husky Git hooks. Before each commit, lint-staged runs ESLint with automatic fixes followed by Prettier on staged JavaScript and TypeScript files. Prettier also formats staged JSON, Markdown, YAML, CSS, SCSS, and HTML files. The hook stages the fixes. Before each push, the hook runs `pnpm test` (unit and contract tests; no live sandbox required). You can also run `pnpm lint:fix` to apply lint fixes across the project.
 
 Install OpenShell v0.1.2 on the same host and under the same operating-system user as the Paperclip worker. Authenticate and configure a gateway before enabling the provider. Verify access under that user:
 
@@ -48,17 +48,17 @@ Select a sandbox environment with provider `openshell`, implemented by this plug
 }
 ```
 
-| Field | Default / behavior |
-| --- | --- |
-| `executable` | `openshell`; executable path or PATH name |
-| `gateway` | Required stable gateway name |
-| `workspace` | `default`; OpenShell resource namespace |
-| `image` | Required prebuilt runtime image reference |
-| `policyFile` | Optional absolute host path to policy YAML |
-| `providers` | Existing credential-provider names; default `[]` |
-| `cpu`, `memory` | Optional OpenShell resource quantities |
-| `timeoutMs` | Operation budget, 300000 ms; range 1000–86400000 |
-| `reuseLease` | `false`; opt in to host lease retention and resume |
+| Field           | Default / behavior                                 |
+| --------------- | -------------------------------------------------- |
+| `executable`    | `openshell`; executable path or PATH name          |
+| `gateway`       | Required stable gateway name                       |
+| `workspace`     | `default`; OpenShell resource namespace            |
+| `image`         | Required prebuilt runtime image reference          |
+| `policyFile`    | Optional absolute host path to policy YAML         |
+| `providers`     | Existing credential-provider names; default `[]`   |
+| `cpu`, `memory` | Optional OpenShell resource quantities             |
+| `timeoutMs`     | Operation budget, 300000 ms; range 1000–86400000   |
+| `reuseLease`    | `false`; opt in to host lease retention and resume |
 
 The remote workspace is `/sandbox/paperclip-workspace`. It is created before admission and returned as `remoteCwd`, with `bash` as the host shell. Sandbox identity and retention policy are recorded in lease metadata; credentials and command environments are never recorded there.
 
