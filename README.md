@@ -10,11 +10,14 @@ Install the published npm package through Paperclip's plugin management UI, then
 
 ```sh
 pnpm install --frozen-lockfile
+pnpm lint
 pnpm typecheck
 pnpm test
 pnpm build
 pnpm check:package
 ```
+
+Installing development dependencies enables Husky Git hooks. Before each commit, lint-staged runs ESLint with automatic fixes on staged JavaScript and TypeScript files and stages the fixes. Before each push, the hook runs `pnpm test` (unit and contract tests; no live sandbox required). You can also run `pnpm lint:fix` to apply lint fixes across the project.
 
 Install OpenShell v0.1.2 on the same host and under the same operating-system user as the Paperclip worker. Authenticate and configure a gateway before enabling the provider. Verify access under that user:
 
