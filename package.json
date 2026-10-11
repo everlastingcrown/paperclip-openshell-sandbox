@@ -40,6 +40,7 @@
   },
   "scripts": {
     "prepare": "husky",
+    "commitlint": "commitlint",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix --max-warnings=0",
     "format": "prettier --write .",
@@ -54,6 +55,8 @@
     "@paperclipai/plugin-sdk": "2026.1005.0"
   },
   "devDependencies": {
+    "@commitlint/cli": "21.2.3",
+    "@commitlint/config-conventional": "21.2.3",
     "@eslint/js": "^10.0.1",
     "@paperclipai/plugin-sdk": "2026.1005.0",
     "@paperclipai/shared": "2026.1005.0",

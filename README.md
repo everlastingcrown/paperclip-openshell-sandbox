@@ -104,6 +104,8 @@ For lifecycle failures, run the scoped list/get commands under the Paperclip wor
 
 Conventional commits drive semantic-release: `fix:` makes patch releases, `feat:` makes minor releases, and breaking-change commits make major releases. `main` publishes stable versions; `canary` publishes `-canary` prereleases on the `canary` npm tag. GitHub releases contain generated release notes. Publishing and npm/GitHub account configuration are separate operator actions.
 
+Husky's `commit-msg` hook enforces Conventional Commits for every new commit, including messages that commitlint normally ignores (such as merge and fixup messages). Use messages such as `feat: add a provider option`, `fix(cli): handle timeouts`, or `chore: update dependencies`. Pull-request CI also checks every commit in the PR. To check a commit range manually, run `pnpm commitlint --from <base-sha> --to HEAD --verbose`.
+
 Compared with the [Slack plugin template](https://github.com/everlastingcrown/paperclip-slack-plugin), this repository adds:
 
 - Read-only pull-request checks for types, tests, build, and installed tarball validation, to catch broken public exports before merge.
