@@ -42,6 +42,7 @@
     "prepare": "husky",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix --max-warnings=0",
+    "format": "prettier --write .",
     "typecheck": "tsc --noEmit",
     "build": "node scripts/build.mjs",
     "test": "node --import tsx --test test/*.test.ts",
