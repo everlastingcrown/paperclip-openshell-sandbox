@@ -1,6 +1,9 @@
 {
   "repositoryUrl": "https://github.com/everlastingcrown/paperclip-openshell-sandbox.git",
-  "branches": ["main", {"name":"canary","channel":"canary","prerelease":"canary"}],
+  "branches": [
+    "main",
+    { "name": "canary", "channel": "canary", "prerelease": "canary" }
+  ],
   "plugins": [
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
