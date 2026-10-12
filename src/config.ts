@@ -15,6 +15,7 @@ export interface Config {
   gateway: string;
   workspace: string;
   image: string;
+  policy?: string;
   policyFile?: string;
   providers: string[];
   cpu?: string;
@@ -65,6 +66,10 @@ export function parseConfig(raw: Record<string, unknown>): Config {
       : optional('cpu');
   const memory = optional('memory');
   const configHome = optional('configHome');
+  const policy = optional('policy');
+  const policyFile = optional('policyFile');
+  if (policy && policyFile)
+    throw new Error('Supply only one of policy or policyFile');
   if (configHome && !configHome.startsWith('/'))
     throw new Error(
       'Invalid configHome (expected absolute XDG config directory)',
@@ -83,7 +88,8 @@ export function parseConfig(raw: Record<string, unknown>): Config {
     gateway,
     workspace,
     image: str('image'),
-    policyFile: optional('policyFile'),
+    policy,
+    policyFile,
     providers,
     cpu,
     memory,
@@ -101,6 +107,11 @@ export const configSchema = {
     gateway: { type: 'string', minLength: 1 },
     workspace: { type: 'string', default: 'default' },
     image: { type: 'string', minLength: 1 },
+    policy: {
+      type: 'string',
+      description:
+        'Complete OpenShell policy YAML; mutually exclusive with policyFile',
+    },
     policyFile: { type: 'string' },
     providers: { type: 'array', items: { type: 'string' }, default: [] },
     cpu: {

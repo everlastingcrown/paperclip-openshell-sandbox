@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   PluginEnvironmentCreationCleanupError,
@@ -37,6 +40,31 @@ import { pluginId } from './manifest.js';
 const hash = (s: string) => createHash('sha256').update(s).digest('hex');
 const fingerprint = (c: Config) =>
   hash(JSON.stringify([c.gateway, c.workspace]));
+async function withPolicyFile<T>(
+  c: Config,
+  action: (path: string | undefined) => Promise<T>,
+): Promise<T> {
+  if (!c.policy) return action(c.policyFile);
+  let directory: string;
+  try {
+    directory = await mkdtemp(join(tmpdir(), 'paperclip-openshell-policy-'));
+  } catch {
+    throw new Error('Cannot create temporary OpenShell policy directory');
+  }
+  try {
+    const path = join(directory, 'policy.yaml');
+    try {
+      await writeFile(path, c.policy, { encoding: 'utf8', mode: 0o600 });
+    } catch {
+      throw new Error('Cannot write temporary OpenShell policy');
+    }
+    return await action(path);
+  } finally {
+    await rm(directory, { recursive: true, force: true }).catch(() => {
+      throw new Error('Cannot remove temporary OpenShell policy');
+    });
+  }
+}
 // OpenShell v0.1.2 MAX_ROUTABLE_NAME_LEN is 19. Keep the full attempt UUID
 // in ownership labels; 64 random bits suffice for the short routable name.
 const nameFor = (attempt: string) => `pc-${hash(attempt).slice(0, 16)}`;
@@ -343,15 +371,20 @@ export class OpenShellProvider {
       for (const [key, value] of Object.entries(i.labels))
         args.push('--label', `${key}=${value}`);
       for (const provider of c.providers) args.push('--provider', provider);
-      if (c.policyFile) args.push('--policy', c.policyFile);
       if (c.cpu) args.push('--cpu', c.cpu);
       if (c.memory) args.push('--memory', c.memory);
       // A detached login shell can exit at EOF. Use a persistent canonical
       // command so subsequent exec and retained leases stay available.
       args.push('--', '/bin/sh', '-c', 'while :; do sleep 3600; done');
-      allocated = true;
       const created = sandbox(
-        json(await lifecycle(c, args, setupDeadline, this.runner)),
+        json(
+          await withPolicyFile(c, async (path) => {
+            // Insert flags before the canonical command separator.
+            if (path) args.splice(args.indexOf('--'), 0, '--policy', path);
+            allocated = true;
+            return lifecycle(c, args, setupDeadline, this.runner);
+          }),
+        ),
       );
       verify(created, i);
       i.id = created.id;
