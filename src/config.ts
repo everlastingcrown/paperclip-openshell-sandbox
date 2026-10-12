@@ -29,8 +29,12 @@ export function parseConfig(raw: Record<string, unknown>): Config {
       throw new Error(`Invalid ${key}`);
     return value;
   };
-  const optional = (key: string) =>
-    raw[key] === undefined ? undefined : str(key);
+  const optional = (key: string) => {
+    const value = raw[key];
+    return value === undefined || (typeof value === 'string' && !value.trim())
+      ? undefined
+      : str(key);
+  };
   const timeoutMs = raw.timeoutMs ?? 300_000;
   if (
     typeof timeoutMs !== 'number' ||
@@ -93,7 +97,7 @@ export const configSchema = {
   required: ['gateway', 'image'],
   properties: {
     executable: { type: 'string', default: 'openshell' },
-    configHome: { type: 'string', minLength: 1 },
+    configHome: { type: 'string' },
     gateway: { type: 'string', minLength: 1 },
     workspace: { type: 'string', default: 'default' },
     image: { type: 'string', minLength: 1 },

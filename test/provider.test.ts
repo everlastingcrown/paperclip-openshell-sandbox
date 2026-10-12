@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { OpenShellProvider } from '../src/provider.js';
-import { parseConfig } from '../src/config.js';
+import { configSchema, parseConfig } from '../src/config.js';
 import { createPlugin } from '../src/plugin.js';
 import {
   run,
@@ -118,6 +118,26 @@ test('configuration defaults and required fields', () => {
     { ...config, configHome: 'relative/config' },
   ])
     assert.throws(() => parseConfig(c));
+});
+test('cleared optional text fields are treated as unspecified', () => {
+  const defaults = parseConfig(config);
+  for (const field of ['configHome', 'policyFile', 'cpu', 'memory']) {
+    for (const value of ['', ' \t\n'])
+      assert.deepEqual(parseConfig({ ...config, [field]: value }), defaults);
+    for (const value of [null, false, {}, '\0'])
+      assert.throws(() => parseConfig({ ...config, [field]: value }));
+  }
+  assert.equal('minLength' in configSchema.properties.configHome, false);
+  for (const field of ['gateway', 'image'])
+    assert.throws(() => parseConfig({ ...config, [field]: '' }));
+});
+test('cleared config home and policy use defaults during acquisition', async () => {
+  const f = fake({ configHome: '', policyFile: '' });
+  const l = await f.provider.acquire(f.params);
+  const args = f.calls.find((call) => call.args.includes('create'))!.args;
+  assert.equal(args.includes('--policy'), false);
+  for (const call of f.calls) assert.deepEqual(call.env, {});
+  await f.provider.destroy(release(f, l));
 });
 test('explicit config home reaches create, inspect, exec and delete subprocesses', async () => {
   const f = fake({ configHome: '/paperclip/.config' });
