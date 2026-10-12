@@ -117,6 +117,8 @@ If an older plugin failed with these settings (`cpu: 1`, `memory: 512Mi`, `image
 
 If manual CLI access works but a gateway preflight fails, check whether the worker can find the registered gateway. A custom server `XDG_CONFIG_HOME` is not inherited by plugin workers; configure `configHome` as described above.
 
+If installing a newer plugin reports the previous version and the Environment form still has the previous fields, restart the Paperclip server and reinstall the intended version, then refresh the UI. Paperclip 2026.1005.0 caches manifest modules by path and modification time; npm tarballs normalize modification times, and imported schema/version modules also remain cached across uninstall/reinstall. Releases built with the version-specific, self-contained manifest entrypoint avoid this stale cache. Restarting alone may leave the previously saved manifest in the database, so reinstall after restarting.
+
 ### Recover cleanup while environment settings are locked
 
 Paperclip can prevent saving an Environment while its lease is pending cleanup. Old leases also use their recorded provider configuration, so changing the Environment does not necessarily repair their CLI config directory. Configure `cleanupRecovery` in the **OpenShell plugin settings**, independently of the Environment:

@@ -68,8 +68,35 @@ import worker from '${pkg.name}/worker';
 import { pluginManifestV1Schema } from '@paperclipai/shared';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { pathToFileURL } from 'node:url';
+import { readFile, writeFile, mkdir, utimes } from 'node:fs/promises';
 assert.equal(manifest.version, ${JSON.stringify(pkg.version)});
 assert.equal(directManifest.version, manifest.version);
+const hostManifestPath = ${JSON.stringify(path.join(installed, actual.paperclipPlugin.manifest))};
+const hostManifest = (await import(pathToFileURL(hostManifestPath).href)).default;
+assert.deepEqual(hostManifest, manifest);
+// Reproduce successive npm installs in one host process, with normalized
+// tarball mtimes and the same package directory. Both metadata and schema
+// must refresh, without relying on a server restart.
+const reloadRoot = ${JSON.stringify(path.join(consumer, 'reload'))};
+await mkdir(reloadRoot);
+const oldPath = reloadRoot + '/manifest-old.js';
+const oldManifest = structuredClone(manifest);
+oldManifest.version = '0.0.0-old';
+oldManifest.environmentDrivers[0].configSchema = {type:'object',properties:{oldField:{type:'string'}}};
+await writeFile(oldPath, 'export default ' + JSON.stringify(oldManifest));
+const fixedTime = new Date('1985-10-26T08:15:00Z');
+await utimes(oldPath, fixedTime, fixedTime);
+const loadLikePaperclip = async file => {
+  const url = pathToFileURL(file);
+  url.searchParams.set('mtime', String(fixedTime.getTime()));
+  return (await import(url.href)).default;
+};
+assert.equal((await loadLikePaperclip(oldPath)).version, oldManifest.version);
+const nextPath = reloadRoot + '/' + ${JSON.stringify(path.basename(actual.paperclipPlugin.manifest))};
+await writeFile(nextPath, await readFile(hostManifestPath, 'utf8'));
+await utimes(nextPath, fixedTime, fixedTime);
+assert.deepEqual(await loadLikePaperclip(nextPath), manifest);
 assert.equal(plugin, worker);
 assert.equal(pluginManifestV1Schema.safeParse(manifest).success, true);
 assert.equal(typeof worker.definition.onEnvironmentStopLease, 'function');
