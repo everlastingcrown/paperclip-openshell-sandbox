@@ -1,3 +1,4 @@
+import { isScopeName } from './validation.js';
 export const remotePath = '/sandbox/paperclip-workspace';
 export const runtimeTools =
   'sh bash node git tar base64 cat mkdir rm mv chmod find dd wc basename awk sed head tail touch cp ln sleep'.split(
@@ -56,9 +57,7 @@ export function parseConfig(raw: Record<string, unknown>): Config {
     throw new Error('Invalid providers');
   const gateway = str('gateway');
   const workspace = str('workspace', 'default');
-  if (
-    ![gateway, workspace].every((v) => /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(v))
-  )
+  if (![gateway, workspace].every(isScopeName))
     throw new Error('Invalid gateway/workspace name');
   const cpu =
     typeof raw.cpu === 'number' && Number.isFinite(raw.cpu)
