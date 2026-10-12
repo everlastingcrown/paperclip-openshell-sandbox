@@ -167,6 +167,17 @@ test('failed runtime check cleans up allocation', async () => {
 });
 test('unconfirmed deletion and acquisition timeout stay structured or fail loudly', async () => {
   const f = fake();
+  // Advance polling deterministically; wall-clock scheduling can expire the
+  // deadline between the loop check and the CLI invocation.
+  let now = 0;
+  Object.assign((f.provider as any).client, {
+    clock: {
+      now: () => now,
+      async sleep(ms: number) {
+        now += ms;
+      },
+    },
+  });
   const l = await f.provider.acquire(f.params);
   f.fail((a) => (a.includes('delete') ? ok() : undefined));
   await assert.rejects(
