@@ -24,7 +24,7 @@ const brokenRemoval: PolicyFiles = {
 async function acquireWithPolicy(f: ReturnType<typeof fake>) {
   return acquire(
     f.params,
-    parseConfig(f.params.config),
+    parseConfig(f.params.config, f.settings),
     new SandboxClient(f.runner, 1),
     undefined,
     brokenRemoval,
@@ -72,7 +72,10 @@ for (const stderr of [
   'name exceeds maximum length private-token',
 ]) {
   test(`create failure and policy removal failure preserve both diagnostics: ${stderr.split(' ')[0]}`, async () => {
-    const f = fake({ policy: 'private-policy' });
+    const f = fake(
+      { policyPreset: 'test' },
+      { policies: { test: 'private-policy' } },
+    );
     f.fail((args) =>
       args[5] === 'create' ? { ...ok(), exitCode: 1, stderr } : undefined,
     );
@@ -97,7 +100,10 @@ for (const stderr of [
 
 for (const failDelete of [false, true]) {
   test(`policy removal after successful creation retains identity (cleanup failure=${failDelete})`, async () => {
-    const f = fake({ policy: 'private-policy' });
+    const f = fake(
+      { policyPreset: 'test' },
+      { policies: { test: 'private-policy' } },
+    );
     if (failDelete)
       f.fail((args) =>
         args[5] === 'delete' ? { ...ok(), exitCode: 1 } : undefined,
@@ -208,7 +214,7 @@ test('pagination limit fails closed', async () => {
   const clock = { now: () => 0, async sleep() {} };
   await assert.rejects(
     new SandboxClient(f.runner, 1, clock).inspect(
-      parseConfig(f.params.config),
+      parseConfig(f.params.config, f.settings),
       'name',
       1000,
     ),
@@ -224,7 +230,7 @@ test('expired deadline never invokes an injected runner', async () => {
     async sleep() {},
   });
   await assert.rejects(
-    client.inspect(parseConfig(f.params.config), 'name', 1000),
+    client.inspect(parseConfig(f.params.config, f.settings), 'name', 1000),
     /deadline exceeded/,
   );
   assert.equal(f.calls.length, 0);
@@ -248,7 +254,7 @@ test('setup deadline exhaustion preserves observed creation identity', async () 
     },
   );
   await assert.rejects(
-    acquire(f.params, parseConfig(f.params.config), client),
+    acquire(f.params, parseConfig(f.params.config, f.settings), client),
     /owned allocation cleaned up/,
   );
   assert.equal(f.record, undefined);
@@ -290,7 +296,7 @@ test('ownership replacement during stop polling never returns a receipt', async 
     base,
     l.providerLeaseId,
     l.metadata,
-    parseConfig(f.params.config),
+    parseConfig(f.params.config, f.settings),
   );
   const client = new SandboxClient(f.runner, 1, {
     now: () => 0,
@@ -303,7 +309,12 @@ test('ownership replacement during stop polling never returns a receipt', async 
   assert.ok(f.record);
   f.record.phase = 'Stopping';
   await assert.rejects(
-    client.wait(parseConfig(f.params.config), owned, 'Stopped', 1000),
+    client.wait(
+      parseConfig(f.params.config, f.settings),
+      owned,
+      'Stopped',
+      1000,
+    ),
     /ownership/,
   );
   assert.ok(!f.calls.some((c) => c.args[5] === 'delete'));
@@ -356,7 +367,10 @@ for (const interruption of [
 
 for (const failure of ['mkdtemp', 'writeFile'] as const) {
   test(`policy ${failure} failure never attempts allocation`, async () => {
-    const f = fake({ policy: 'private-policy' });
+    const f = fake(
+      { policyPreset: 'test' },
+      { policies: { test: 'private-policy' } },
+    );
     const files: PolicyFiles = {
       ...brokenRemoval,
       async rm() {},
@@ -367,7 +381,7 @@ for (const failure of ['mkdtemp', 'writeFile'] as const) {
     await assert.rejects(
       acquire(
         f.params,
-        parseConfig(f.params.config),
+        parseConfig(f.params.config, f.settings),
         new SandboxClient(f.runner, 1),
         undefined,
         files,

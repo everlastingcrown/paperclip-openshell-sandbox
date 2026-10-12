@@ -5,9 +5,10 @@ import {
 } from '@paperclipai/plugin-sdk';
 import { parseConfig, validateRuntimeImage } from './config.js';
 import { OpenShellProvider } from './provider.js';
-import { parseCleanupRecovery } from './recovery.js';
+import { parsePluginConfig, normalizedEnvironment } from './presets.js';
 export function createPlugin(provider = new OpenShellProvider()) {
   let logger: PluginLogger | undefined;
+  let getSettings: (() => Promise<Record<string, unknown>>) | undefined;
   const control = async <T>(
     operation: string,
     p: PluginEnvironmentDriverBaseParams,
@@ -28,14 +29,13 @@ export function createPlugin(provider = new OpenShellProvider()) {
   return definePlugin({
     async setup(ctx) {
       logger = ctx.logger;
+      getSettings = () => ctx.config.get();
+      provider.setPluginConfig((companyId) => ctx.config.get(companyId));
       provider.setLogger(ctx.logger);
-      provider.setCleanupRecovery(async (companyId) =>
-        parseCleanupRecovery(await ctx.config.get(companyId)),
-      );
     },
     async onValidateConfig(config) {
       try {
-        parseCleanupRecovery(config);
+        parsePluginConfig(config);
         return { ok: true };
       } catch (error) {
         return { ok: false, errors: [(error as Error).message] };
@@ -45,9 +45,9 @@ export function createPlugin(provider = new OpenShellProvider()) {
       try {
         if (p.driverKey !== 'openshell')
           throw new Error('Unsupported driver key');
-        const config = parseConfig(p.config);
+        const config = parseConfig(p.config, (await getSettings?.()) ?? {});
         validateRuntimeImage(config);
-        return { ok: true, normalizedConfig: { ...config } };
+        return { ok: true, normalizedConfig: normalizedEnvironment(p.config) };
       } catch (error) {
         return { ok: false, errors: [(error as Error).message] };
       }

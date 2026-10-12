@@ -27,7 +27,7 @@ openshell gateway list --output json
 openshell --gateway my-gateway --workspace default sandbox list --output json
 ```
 
-The worker needs access to the CLI executable, its stored gateway metadata/authentication, and any configured policy file. Alternatively, supply the complete policy inline in the Environment provider configuration. Containerized Paperclip installations need those resources inside the host container. A gateway name is mandatory; every command supplies both gateway and workspace. The worker removes `OPENSHELL_GATEWAY_ENDPOINT` from subprocess environments so a host environment variable cannot override the named scope. Keep the gateway name bound to the same gateway while leases exist.
+The worker needs access to the CLI executable and its stored gateway metadata/authentication. Store reusable policy YAML and runtime profiles in the plugin configuration. Containerized Paperclip installations need those resources inside the host container. A gateway name is mandatory; every command supplies both gateway and workspace. The worker removes `OPENSHELL_GATEWAY_ENDPOINT` from subprocess environments so a host environment variable cannot override the named scope. Keep the gateway name bound to the same gateway while leases exist.
 
 Paperclip starts plugin workers with a minimal environment that does not inherit the server's `HOME` or `XDG_CONFIG_HOME`. If gateway registration uses a custom XDG configuration directory, set `configHome` explicitly in the Environment provider configuration. For example, gateways stored under `/paperclip/.config/openshell/gateways` require `"configHome": "/paperclip/.config"`. This sets `XDG_CONFIG_HOME` for every OpenShell subprocess; the path is the parent of the `openshell` directory. The directory and its gateway authentication files must be accessible to the worker's OS user.
 
@@ -42,7 +42,7 @@ Select a sandbox environment with provider `openshell`, implemented by this plug
   "gateway": "my-gateway",
   "workspace": "default",
   "image": "registry.example.com/paperclip-runtime:tested",
-  "policyFile": "/etc/paperclip/openshell-policy.yaml",
+  "policyPreset": "development",
   "providers": ["existing-model-provider"],
   "cpu": "2",
   "memory": "4Gi",
@@ -51,21 +51,62 @@ Select a sandbox environment with provider `openshell`, implemented by this plug
 }
 ```
 
-| Field           | Default / behavior                                          |
-| --------------- | ----------------------------------------------------------- |
-| `executable`    | `openshell`; executable path or PATH name                   |
-| `configHome`    | Optional absolute XDG configuration directory               |
-| `gateway`       | Required stable gateway name                                |
-| `workspace`     | `default`; OpenShell resource namespace                     |
-| `image`         | Required prebuilt runtime image reference                   |
-| `policy`        | Optional complete policy YAML string; excludes `policyFile` |
-| `policyFile`    | Optional absolute host path to policy YAML                  |
-| `providers`     | Existing credential-provider names; default `[]`            |
-| `cpu`, `memory` | Optional OpenShell resource quantities                      |
-| `timeoutMs`     | Operation budget, 300000 ms; range 1000–86400000            |
-| `reuseLease`    | `false`; opt in to host lease retention and resume          |
+| Field           | Default / behavior                                       |
+| --------------- | -------------------------------------------------------- |
+| `executable`    | `openshell`; executable path or PATH name                |
+| `configHome`    | Optional absolute XDG configuration directory            |
+| `gateway`       | Stable gateway name; required after merging              |
+| `workspace`     | `default`; OpenShell resource namespace                  |
+| `image`         | Runtime image; required after merging                    |
+| `profile`       | Optional named runtime profile from plugin configuration |
+| `policyPreset`  | Optional named policy from plugin configuration          |
+| `providers`     | Existing credential-provider names; default `[]`         |
+| `cpu`, `memory` | Optional OpenShell resource quantities                   |
+| `timeoutMs`     | Operation budget, 300000 ms; range 1000–86400000         |
+| `reuseLease`    | `false`; opt in to host lease retention and resume       |
 
-To supply the entire policy in the environment configuration, replace `policyFile` with `policy`, containing your complete OpenShell YAML as a JSON string (encode line breaks as `\n`). For example, a YAML document beginning with `version: 1` starts as `"policy": "version: 1\n..."`; replace the ellipsis with the rest of your policy. The worker writes the exact text to a private temporary file for sandbox creation and removes it when the create command finishes, including on failure. No policy file needs to be provisioned in the Paperclip instance. OpenShell validates the policy contents. Supplying both nonempty `policy` and `policyFile` is rejected; empty or whitespace-only values are treated as omitted.
+### Plugin policy presets and runtime profiles
+
+Configure named presets in the plugin's company-scoped configuration, alongside any `cleanupRecovery` entries:
+
+```json
+{
+  "policies": {
+    "development": "version: 1\n..."
+  },
+  "profiles": {
+    "standard": {
+      "gateway": "production",
+      "image": "registry.example/paperclip-runtime:latest",
+      "policyPreset": "development",
+      "providers": ["github"],
+      "cpu": "2",
+      "memory": "4Gi"
+    }
+  }
+}
+```
+
+Replace the policy ellipsis with a complete OpenShell YAML document. Policies contain inline YAML only; no host policy files need provisioning. OpenShell validates policy contents. Preset names are case-sensitive, start with an ASCII letter or digit, contain only letters, digits, underscores or hyphens, and are at most 64 characters.
+
+An environment can select a profile and override individual settings:
+
+```json
+{
+  "profile": "standard",
+  "memory": "8Gi"
+}
+```
+
+Profiles may contain any runtime setting in the table and `policyPreset`, but cannot reference another profile or contain `policy`/`policyFile`. They may be partial: `gateway` and `image` must exist after merging with environment settings. Explicit environment settings override profile values, then ordinary defaults apply. Arrays replace rather than concatenate; `false` overrides `true`. Empty optional text is omitted and inherits the profile value. An omitted `policyPreset` inherits the profile's policy; select another named policy to override it. There is no explicit policy-disable override.
+
+Saved environment configuration keeps references rather than copying inherited settings or YAML. The worker resolves current company configuration on each operation. Unknown references fail before allocation. Policy edits apply to future allocations; existing sandboxes retain their applied policy. The worker writes exact YAML to a private temporary file for creation and removes it on success or failure. Policy contents are excluded from lease metadata and lifecycle diagnostics.
+
+### Migration from direct environment policies
+
+Direct environment `policy` and `policyFile` values are no longer supported for validation, probing, acquisition, resume, or execution. Move inline YAML into plugin `policies`, or copy the contents of the old host policy file there, then replace the environment field with `policyPreset`. Stop, destroy, and cleanup reconciliation remain available for existing leases using legacy policy fields, and do not require policy presets to remain present.
+
+Keep referenced profiles available and their gateway/workspace unchanged until their leases and pending cleanup records are drained. Changing scope fails existing ownership checks; deleting a referenced profile prevents resolving its runtime scope. Restore the original profile to clean up those leases before changing or removing it.
 
 The remote workspace is `/sandbox/paperclip-workspace`. It is created before admission and returned as `remoteCwd`, with `bash` as the host shell. Sandbox identity and retention policy are recorded in lease metadata; credentials and command environments are never recorded there.
 
@@ -73,7 +114,7 @@ The runtime image must support noninteractive exec and permit its sandbox user t
 
 For a provider smoke test, `node:22-bookworm` passed live allocation, all required tool/workspace checks, Node execution and confirmed deletion on the `homelab` gateway with `cpu: "1"`, `memory: "512Mi"` and `configHome: "/paperclip/.config"`. This verifies the provider prerequisites; build in your adapter's agent CLI and workload dependencies before running agents. Pin your production image to a tested digest.
 
-The policy must permit these tools, workspace writes, agent execution, and the required outbound endpoints. Creation explicitly uses `--approval-mode manual` and `--no-auto-providers`. Create and authenticate credential providers separately; attach their names with `providers`. Credentials remain managed by OpenShell. Omitting both `policy` and `policyFile` uses OpenShell's configured/default policy. Review agent-authored policy proposals using OpenShell's normal manual approval process.
+The policy must permit these tools, workspace writes, agent execution, and the required outbound endpoints. Creation explicitly uses `--approval-mode manual` and `--no-auto-providers`. Create and authenticate credential providers separately; attach their names with `providers`. Credentials remain managed by OpenShell. Omitting `policyPreset` from both the environment and its profile uses OpenShell's configured/default policy. Review agent-authored policy proposals using OpenShell's normal manual approval process.
 
 ## Lease and execution behavior
 
