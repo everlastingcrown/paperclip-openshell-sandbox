@@ -9,6 +9,66 @@ export interface CommandResult {
   signal: string | null;
   timedOut: boolean;
 }
+export class OpenShellCommandError extends Error {
+  constructor(
+    message: string,
+    readonly allocationImpossible = false,
+  ) {
+    super(message);
+  }
+}
+// Only recognized diagnostics are forwarded. Arbitrary CLI output can contain
+// provider credentials, and must not enter RPC errors or host logs.
+export function commandFailure(
+  c: Config,
+  operation: string,
+  result: CommandResult,
+) {
+  const text = result.stderr
+    // eslint-disable-next-line no-control-regex -- strip ANSI before classification
+    .replace(/\x1b\[[0-9;]*m/g, '')
+    .replace(/\s+/g, ' ');
+  let reason = 'check gateway authentication, policy and CLI compatibility';
+  let allocationImpossible = false;
+  if (/name exceeds.*maximum length/i.test(text)) {
+    reason = 'sandbox name exceeds the OpenShell 19-character limit';
+    allocationImpossible = true;
+  } else if (/Unknown gateway/i.test(text)) {
+    reason =
+      'gateway is not registered in the worker config directory; check configHome and gateway registration';
+    allocationImpossible = true;
+  } else if (
+    /unexpected argument|unrecognized option|invalid value.*for.*--/i.test(text)
+  ) {
+    reason =
+      'CLI rejected an argument; install OpenShell v0.1.2 and check resource quantities';
+    allocationImpossible = true;
+  } else if (/HOME is not set/i.test(text)) {
+    reason =
+      'CLI cannot resolve its config directory; set configHome for the plugin worker';
+    allocationImpossible = true;
+  } else if (/permission denied|operation not permitted/i.test(text)) {
+    reason =
+      'permission denied; check worker access to configHome, TLS files and policy files';
+  } else if (/certificate|invalid peer|unknown issuer/i.test(text)) {
+    reason =
+      'TLS verification failed; check gateway hostname and client/CA certificates';
+  } else if (
+    /connection refused|connect error|dns error|failed to lookup|transport error/i.test(
+      text,
+    )
+  ) {
+    reason =
+      'gateway connection failed; check DNS, gateway availability and network access';
+  } else if (/unauthenticated|unauthorized|authentication/i.test(text)) {
+    reason =
+      'gateway authentication failed; check the worker gateway credentials';
+  }
+  return new OpenShellCommandError(
+    `OpenShell sandbox ${operation} ${result.timedOut ? 'timed out' : `failed (exit ${result.exitCode ?? 'none'}${result.signal ? `, signal ${result.signal}` : ''})`}; gateway=${c.gateway}, workspace=${c.workspace}, configHome=${c.configHome ?? 'inherited/default'}: ${reason}`,
+    !result.timedOut && allocationImpossible,
+  );
+}
 export type Runner = (
   executable: string,
   args: string[],
@@ -75,10 +135,15 @@ export const run: Runner = async (
     child.stdin.on('error', (error) => {
       if ((error as NodeJS.ErrnoException).code !== 'EPIPE') terminate();
     });
-    child.once('error', () => {
+    child.once('error', (error: NodeJS.ErrnoException) => {
       clearTimeout(timer);
       if (hard) clearTimeout(hard);
-      reject(new Error('Unable to start OpenShell CLI'));
+      reject(
+        new OpenShellCommandError(
+          `Unable to start OpenShell CLI (${error.code ?? 'spawn error'}); check executable and worker PATH`,
+          true,
+        ),
+      );
     });
     child.once('close', (exitCode, signal) => {
       clearTimeout(timer);
@@ -113,11 +178,7 @@ export async function lifecycle(
     c.configHome ? { XDG_CONFIG_HOME: c.configHome } : {},
   );
   if (result.timedOut || result.exitCode !== 0)
-    throw new Error(
-      result.timedOut
-        ? 'OpenShell operation timed out'
-        : 'OpenShell lifecycle command failed (check host authentication and gateway)',
-    );
+    throw commandFailure(c, args[0], result);
   return result.stdout;
 }
 export function json(value: string): unknown {

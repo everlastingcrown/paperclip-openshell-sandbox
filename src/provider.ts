@@ -11,8 +11,17 @@ import {
   type PluginEnvironmentDriverBaseParams as Base,
   type PluginEnvironmentLease,
   type PluginEnvironmentTerminationReceipt,
+  type PluginEnvironmentProbeParams,
+  type PluginEnvironmentProbeResult,
+  type PluginLogger,
 } from '@paperclipai/plugin-sdk';
-import { parseConfig, remotePath, type Config } from './config.js';
+import {
+  parseConfig,
+  remotePath,
+  runtimeTools,
+  validateRuntimeImage,
+  type Config,
+} from './config.js';
 import {
   run,
   lifecycle,
@@ -20,12 +29,18 @@ import {
   object,
   scope,
   checkStdin,
+  commandFailure,
+  OpenShellCommandError,
   type Runner,
 } from './cli.js';
 import { pluginId } from './manifest.js';
 const hash = (s: string) => createHash('sha256').update(s).digest('hex');
 const fingerprint = (c: Config) =>
   hash(JSON.stringify([c.gateway, c.workspace]));
+// OpenShell v0.1.2 MAX_ROUTABLE_NAME_LEN is 19. Keep the full attempt UUID
+// in ownership labels; 64 random bits suffice for the short routable name.
+const nameFor = (attempt: string) => `pc-${hash(attempt).slice(0, 16)}`;
+const legacyName = (attempt: string) => `paperclip-${attempt}`;
 const labelsFor = (p: Base, attempt: string) => ({
   'paperclip-provider': 'openshell',
   'paperclip-company': hash(p.companyId).slice(0, 32),
@@ -74,7 +89,10 @@ function identity(
     m.pluginId !== pluginId ||
     m.id !== id ||
     typeof m.name !== 'string' ||
-    !/^paperclip-[0-9a-f-]{36}$/.test(m.name) ||
+    ![
+      nameFor(String(labels['paperclip-attempt'])),
+      legacyName(String(labels['paperclip-attempt'])),
+    ].includes(m.name) ||
     m.gateway !== c.gateway ||
     m.workspace !== c.workspace ||
     m.remotePath !== remotePath ||
@@ -106,6 +124,10 @@ function verify(s: Sandbox, i: Identity) {
     throw new Error('Sandbox ownership mismatch');
 }
 export class OpenShellProvider {
+  private logger?: PluginLogger;
+  setLogger(logger: PluginLogger) {
+    this.logger = logger;
+  }
   constructor(
     private readonly runner: Runner = run,
     private readonly pollMs = 500,
@@ -113,6 +135,37 @@ export class OpenShellProvider {
   private config(p: { driverKey: string; config: Record<string, unknown> }) {
     if (p.driverKey !== 'openshell') throw new Error('Unsupported driver key');
     return parseConfig(p.config);
+  }
+  async probe(
+    p: PluginEnvironmentProbeParams,
+  ): Promise<PluginEnvironmentProbeResult> {
+    try {
+      const c = this.config(p);
+      validateRuntimeImage(c);
+      await this.inspect(c, '', Date.now() + Math.min(c.timeoutMs, 30_000));
+      return {
+        ok: true,
+        summary: `OpenShell gateway ${c.gateway} is accessible in workspace ${c.workspace}.`,
+        diagnostics: [
+          {
+            severity: 'info',
+            code: 'gateway_accessible',
+            message:
+              'Connectivity checked without allocating a sandbox. Test Provider checks image boot, runtime tools and workspace writes.',
+          },
+        ],
+      };
+    } catch (error) {
+      const message = (error as Error).message;
+      this.logger?.warn('OpenShell draft probe failed', { error: message });
+      return {
+        ok: false,
+        summary: message,
+        diagnostics: [
+          { severity: 'error', code: 'openshell_preflight_failed', message },
+        ],
+      };
+    }
   }
   private async inspect(
     c: Config,
@@ -175,7 +228,9 @@ export class OpenShellProvider {
         state === 'Ready' &&
         ['Error', 'Completed', 'Deleting'].includes(s.phase)
       )
-        throw new Error('Sandbox did not become ready');
+        throw new Error(
+          `Sandbox ${i.name} did not become ready (phase=${s.phase})`,
+        );
       await delay(Math.min(this.pollMs, Math.max(1, deadline - Date.now())));
     }
     throw new Error(`Sandbox ${state} confirmation timed out`);
@@ -237,13 +292,14 @@ export class OpenShellProvider {
   }
   async acquire(p: Acquire): Promise<PluginEnvironmentLease> {
     const c = this.config(p);
+    validateRuntimeImage(c);
     if (p.requestedExpiresAt != null)
       throw new Error(
         'OpenShell CLI cannot guarantee provider-enforced expiry',
       );
     const attemptId = randomUUID();
     const i: Identity = {
-      name: `paperclip-${attemptId}`,
+      name: nameFor(attemptId),
       gateway: c.gateway,
       workspace: c.workspace,
       labels: labelsFor(p, attemptId),
@@ -254,7 +310,7 @@ export class OpenShellProvider {
     const setupDeadline =
       deadline - Math.min(30_000, Math.floor(c.timeoutMs / 10));
     let allocated = false;
-    let phase = 'allocation';
+    let phase = 'preflight';
     const cleanup = (): PluginEnvironmentCreationCleanup => ({
       providerLeaseId: i.name,
       ...(i.id ? { observedProviderLeaseId: i.id } : {}),
@@ -266,6 +322,10 @@ export class OpenShellProvider {
       labels: i.labels,
     });
     try {
+      // Fail gateway, worker config and response-contract errors before a
+      // create request can leave a durable uncertain-cleanup record.
+      await this.inspect(c, i.name, setupDeadline);
+      phase = 'allocation';
       const args = [
         'create',
         '--name',
@@ -286,6 +346,9 @@ export class OpenShellProvider {
       if (c.policyFile) args.push('--policy', c.policyFile);
       if (c.cpu) args.push('--cpu', c.cpu);
       if (c.memory) args.push('--memory', c.memory);
+      // A detached login shell can exit at EOF. Use a persistent canonical
+      // command so subsequent exec and retained leases stay available.
+      args.push('--', '/bin/sh', '-c', 'while :; do sleep 3600; done');
       allocated = true;
       const created = sandbox(
         json(await lifecycle(c, args, setupDeadline, this.runner)),
@@ -301,7 +364,7 @@ export class OpenShellProvider {
         '/bin/sh',
         [
           '-c',
-          'set -eu; mkdir -p "$1"; for tool in sh bash node git tar base64 cat mkdir rm mv chmod find dd wc basename awk sed head tail touch cp ln sleep; do command -v "$tool" >/dev/null; done; test -w "$1"',
+          `set -eu; for tool in ${runtimeTools.join(' ')}; do command -v "$tool" >/dev/null || { echo "paperclip: missing tool $tool" >&2; exit 1; }; done; mkdir -p "$1" || { echo 'paperclip: cannot create workspace' >&2; exit 1; }; test -w "$1" || { echo 'paperclip: workspace is not writable' >&2; exit 1; }`,
           'paperclip-setup',
           remotePath,
         ],
@@ -310,30 +373,62 @@ export class OpenShellProvider {
         undefined,
         setupDeadline - Date.now(),
       );
-      if (setup.exitCode !== 0 || setup.timedOut)
-        throw new Error('Runtime workspace/tool check failed');
+      if (setup.exitCode !== 0 || setup.timedOut) {
+        const missing = runtimeTools.filter((tool) =>
+          setup.stderr.includes(`paperclip: missing tool ${tool}\n`),
+        );
+        const workspace =
+          setup.stderr.includes('paperclip: cannot create workspace') ||
+          setup.stderr.includes('paperclip: workspace is not writable');
+        throw new Error(
+          `Runtime workspace/tool check failed for image ${c.image}: ${missing.length ? `missing ${missing.join(', ')}` : workspace ? `cannot write ${remotePath}; check image user and filesystem policy` : commandFailure(c, 'exec', setup).message}`,
+        );
+      }
       return lease(i);
-    } catch {
-      if (!allocated) throw new Error('Acquisition failed before allocation');
+    } catch (error) {
+      const reason = (error as Error).message;
+      this.logger?.error('OpenShell acquisition failed', {
+        phase,
+        sandboxName: i.name,
+        gateway: c.gateway,
+        workspace: c.workspace,
+        error: reason,
+      });
+      if (
+        !allocated ||
+        (error instanceof OpenShellCommandError && error.allocationImpossible)
+      )
+        throw new Error(
+          `OpenShell acquisition failed during ${phase}; no allocation created: ${reason}`,
+          { cause: error },
+        );
       try {
         const found = await this.inspect(c, i.name, deadline);
         if (!found) {
-          if (!i.id) throw new Error('Allocation outcome uncertain');
+          if (!i.id)
+            throw new Error('Allocation outcome uncertain', { cause: error });
         } else {
           verify(found, i);
           i.id = found.id;
           await lifecycle(c, ['delete', i.name], deadline, this.runner);
           await this.wait(c, i, 'missing', deadline);
         }
-      } catch {
+      } catch (cleanupError) {
+        const cleanupReason = (cleanupError as Error).message;
+        this.logger?.error(
+          'OpenShell allocation cleanup requires reconciliation',
+          { sandboxName: i.name, error: cleanupReason },
+        );
+        // The SDK explicitly forbids serializing provider exceptions here.
         throw new PluginEnvironmentCreationCleanupError(
           [],
-          `OpenShell acquisition failed during ${phase}; allocation cleanup requires reconciliation`,
+          `OpenShell acquisition failed during ${phase}: ${reason}; allocation cleanup requires reconciliation for ${i.name}: ${cleanupReason}`,
           cleanup(),
         );
       }
       throw new Error(
-        `OpenShell acquisition failed during ${phase}; owned allocation cleaned up`,
+        `OpenShell acquisition failed during ${phase}; owned allocation cleaned up: ${reason}`,
+        { cause: error },
       );
     }
   }
@@ -426,7 +521,9 @@ export class OpenShellProvider {
         f.accountFingerprint !== fingerprint(c) ||
         typeof f.attemptId !== 'string' ||
         !/^[0-9a-f-]{36}$/.test(f.attemptId) ||
-        f.providerLeaseId !== `paperclip-${f.attemptId}` ||
+        ![nameFor(f.attemptId), legacyName(f.attemptId)].includes(
+          String(f.providerLeaseId),
+        ) ||
         Object.entries(labelsFor(p, f.attemptId)).some(
           ([k, v]) => labels[k] !== v,
         ) ||
@@ -446,10 +543,19 @@ export class OpenShellProvider {
     } else i = identity(p, p.providerLeaseId, p.leaseMetadata, c);
     const s = await this.inspect(c, i.name, deadline);
     if (failed && !i.id) {
+      // Versions before this fix always sent 46-character names, rejected
+      // before allocation by v0.1.2's 19-character validation. A successful
+      // scoped list confirms absence; these attempts cannot appear later.
+      if (!s && i.name === legacyName(String(object(failed).attemptId))) {
+        this.logger?.info('Reconciled rejected legacy OpenShell allocation', {
+          sandboxName: i.name,
+        });
+        return { providerLeaseId: p.providerLeaseId!, state: 'destroyed' };
+      }
       if (s) verify(s, i);
       throw new PluginEnvironmentCreationCleanupError(
         [],
-        'Uncertain creation requires durable identity before teardown',
+        `Uncertain creation of ${i.name} requires durable identity before teardown${s ? '; observed ID will be persisted for the next sweep' : '; no sandbox observed, investigate the original create failure before manual reconciliation'}`,
         {
           ...(failed as PluginEnvironmentCreationCleanup),
           ...(s ? { observedProviderLeaseId: s.id } : {}),

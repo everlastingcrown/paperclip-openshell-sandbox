@@ -1,4 +1,14 @@
 export const remotePath = '/sandbox/paperclip-workspace';
+export const runtimeTools =
+  'sh bash node git tar base64 cat mkdir rm mv chmod find dd wc basename awk sed head tail touch cp ln sleep'.split(
+    ' ',
+  );
+export function validateRuntimeImage(c: Config) {
+  if (/^(?:docker\.io\/)?curlimages\/curl(?::|@|$)/.test(c.image))
+    throw new Error(
+      'curlimages/curl is a network test image, not a Paperclip runtime. Use an image containing bash, node, git and the required workspace tools (see README).',
+    );
+}
 export interface Config {
   executable: string;
   configHome?: string;
@@ -45,16 +55,23 @@ export function parseConfig(raw: Record<string, unknown>): Config {
     ![gateway, workspace].every((v) => /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(v))
   )
     throw new Error('Invalid gateway/workspace name');
-  const cpu = optional('cpu');
+  const cpu =
+    typeof raw.cpu === 'number' && Number.isFinite(raw.cpu)
+      ? String(raw.cpu)
+      : optional('cpu');
   const memory = optional('memory');
   const configHome = optional('configHome');
   if (configHome && !configHome.startsWith('/'))
     throw new Error(
       'Invalid configHome (expected absolute XDG config directory)',
     );
-  if (cpu && !/^(?:\d+(?:\.\d+)?|\d+m)$/.test(cpu))
+  if (cpu && (!/^(?:\d+(?:\.\d+)?|\d+m)$/.test(cpu) || parseFloat(cpu) <= 0))
     throw new Error('Invalid cpu');
-  if (memory && !/^\d+(?:\.\d+)?(?:[EPTGMK]i?|m|k)?$/.test(memory))
+  if (
+    memory &&
+    (!/^\d+(?:\.\d+)?(?:[EPTGMK]i?|m|k)?$/.test(memory) ||
+      parseFloat(memory) <= 0)
+  )
     throw new Error('Invalid memory');
   return {
     executable: str('executable', 'openshell'),
@@ -82,7 +99,9 @@ export const configSchema = {
     image: { type: 'string', minLength: 1 },
     policyFile: { type: 'string' },
     providers: { type: 'array', items: { type: 'string' }, default: [] },
-    cpu: { type: 'string' },
+    cpu: {
+      anyOf: [{ type: 'string' }, { type: 'number', exclusiveMinimum: 0 }],
+    },
     memory: { type: 'string' },
     timeoutMs: {
       type: 'integer',

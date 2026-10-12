@@ -55,6 +55,7 @@ test('real worker advertises every declared lifecycle capability and stop-only h
       'environmentExecute',
       'environmentRealizeWorkspace',
       'environmentValidateConfig',
+      'environmentProbe',
     ])
       assert.ok(methods.includes(method), method);
     for (const method of ['environmentSyncIn', 'environmentSyncOut'])

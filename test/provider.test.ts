@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { OpenShellProvider } from '../src/provider.js';
 import { parseConfig } from '../src/config.js';
+import { createPlugin } from '../src/plugin.js';
 import {
   run,
   MAX_STDIN,
@@ -145,7 +146,7 @@ test('acquisition uses pinned scope, ownership and noninteractive create flags',
     memory: '1Gi',
   });
   const l = await f.provider.acquire(f.params);
-  const args = f.calls[0].args;
+  const args = f.calls.find((call) => call.args.includes('create'))!.args;
   for (const flag of [
     '--detach',
     '--no-tty',
@@ -172,6 +173,111 @@ test('acquisition uses pinned scope, ownership and noninteractive create flags',
   ]);
   assert.ok((l.metadata?.openshell as any).labels['paperclip-attempt']);
   assert.equal(l.providerLeaseId, 'sandbox-id');
+  const name = args[args.indexOf('--name') + 1];
+  assert.match(name, /^pc-[0-9a-f]{16}$/);
+  assert.ok(name.length <= 19);
+  assert.deepEqual(args.slice(-4), [
+    '--',
+    '/bin/sh',
+    '-c',
+    'while :; do sleep 3600; done',
+  ]);
+});
+test('draft probes return diagnostics and never allocate', async () => {
+  const f = fake();
+  const plugin = createPlugin(f.provider);
+  assert.equal(
+    (await plugin.definition.onEnvironmentProbe!(f.params)).ok,
+    true,
+  );
+  assert.ok(f.calls.every((call) => call.args.includes('list')));
+  f.fail((a) =>
+    a.includes('list')
+      ? { ...ok(), exitCode: 1, stderr: "Unknown gateway 'test'. secret-token" }
+      : undefined,
+  );
+  const result = await plugin.definition.onEnvironmentProbe!(f.params);
+  assert.equal(result.ok, false);
+  assert.match(result.summary!, /gateway is not registered.*configHome/);
+  assert.ok(!JSON.stringify(result).includes('secret-token'));
+});
+test('preflight failure never creates a pending cleanup record', async () => {
+  const f = fake();
+  f.fail((a) =>
+    a.includes('list')
+      ? { ...ok(), exitCode: 1, stderr: 'connection refused' }
+      : undefined,
+  );
+  await assert.rejects(f.provider.acquire(f.params), (error: any) => {
+    assert.match(
+      error.message,
+      /preflight.*no allocation created.*gateway connection failed/,
+    );
+    assert.equal(readEnvironmentCreationCleanupError(error), null);
+    return true;
+  });
+  assert.ok(!f.calls.some((call) => call.args.includes('create')));
+});
+test('definite name rejection never becomes uncertain cleanup', async () => {
+  const f = fake();
+  f.fail((a) =>
+    a.includes('create')
+      ? {
+          ...ok(),
+          exitCode: 1,
+          stderr: 'name exceeds maximum length (46 > 19)',
+        }
+      : undefined,
+  );
+  await assert.rejects(f.provider.acquire(f.params), (error: any) => {
+    assert.match(error.message, /no allocation created.*19-character/);
+    assert.equal(readEnvironmentCreationCleanupError(error), null);
+    return true;
+  });
+});
+test('curl image is rejected at validation, draft probe and admission before allocation', async () => {
+  const f = fake({ image: 'curlimages/curl:8.21.0', cpu: 1, memory: '512Mi' });
+  const plugin = createPlugin(f.provider);
+  const validation = await plugin.definition.onEnvironmentValidateConfig!(
+    f.params,
+  );
+  assert.equal(validation.ok, false);
+  assert.match(validation.errors![0], /Paperclip runtime.*bash, node, git/);
+  assert.equal(
+    (await plugin.definition.onEnvironmentProbe!(f.params)).ok,
+    false,
+  );
+  await assert.rejects(f.provider.acquire(f.params), /Paperclip runtime/);
+  assert.equal(f.calls.length, 0);
+  assert.equal(parseConfig({ ...config, cpu: 1 }).cpu, '1');
+});
+test('runtime failure identifies the missing tool and cleanup failure separately', async () => {
+  const f = fake();
+  const logs: any[] = [];
+  f.provider.setLogger({
+    info() {},
+    debug() {},
+    warn() {},
+    error: (message, meta) => logs.push({ message, meta }),
+  });
+  f.fail((a) =>
+    a.includes('exec')
+      ? { ...ok(), exitCode: 1, stderr: 'paperclip: missing tool node\n' }
+      : a.includes('delete')
+        ? { ...ok(), exitCode: 1, stderr: 'connection refused secret-token' }
+        : undefined,
+  );
+  await assert.rejects(f.provider.acquire(f.params), (error: any) => {
+    assert.ok(error instanceof PluginEnvironmentCreationCleanupError);
+    assert.match(
+      error.message,
+      /missing node.*cleanup requires reconciliation.*sandbox delete.*gateway connection failed/,
+    );
+    assert.ok(!error.message.includes('secret-token'));
+    return true;
+  });
+  assert.equal(logs.length, 2);
+  assert.ok(!JSON.stringify(logs).includes('secret-token'));
 });
 test('requested provider expiry rejects before CLI allocation', async () => {
   const f = fake();
@@ -417,6 +523,48 @@ test('uncertain creation preserves pending cleanup; observation must be durable 
 });
 test('JSON and response validation fail closed', () => {
   assert.throws(() => json('not json'), /Malformed/);
+});
+test('legacy oversized attempts reconcile only after a successful scoped absence check', async () => {
+  const f = fake({ image: 'curlimages/curl:8.21.0' });
+  const seed = fake();
+  seed.fail((a) => (a.includes('create') ? ok('malformed') : undefined));
+  let cleanup: any;
+  try {
+    await seed.provider.acquire(seed.params);
+  } catch (error) {
+    cleanup = readEnvironmentCreationCleanupError(error);
+  }
+  assert.ok(cleanup);
+  cleanup.providerLeaseId = `paperclip-${cleanup.attemptId}`;
+  const p = {
+    ...f.params,
+    providerLeaseId: cleanup.providerLeaseId,
+    leaseMetadata: { failedCreateCleanup: cleanup },
+  };
+  f.fail((a) => (a.includes('list') ? ok('malformed') : undefined));
+  await assert.rejects(f.provider.destroy(p), /Malformed/);
+  f.fail(undefined);
+  assert.deepEqual(await f.provider.destroy(p), {
+    providerLeaseId: cleanup.providerLeaseId,
+    state: 'destroyed',
+  });
+  assert.ok(!f.calls.some((call) => call.args.includes('delete')));
+  f.record = {
+    id: 'observed-legacy',
+    name: cleanup.providerLeaseId,
+    workspace: 'default',
+    phase: 'Ready',
+    labels: cleanup.labels,
+  };
+  await assert.rejects(f.provider.destroy(p), (error: any) => {
+    assert.equal(
+      readEnvironmentCreationCleanupError(error)?.observedProviderLeaseId,
+      'observed-legacy',
+    );
+    return true;
+  });
+  f.record.labels['paperclip-company'] = 'foreign';
+  await assert.rejects(f.provider.destroy(p), /ownership/);
 });
 test('real subprocess closes stdin and preserves output and exit status', async () => {
   const result = await run(
