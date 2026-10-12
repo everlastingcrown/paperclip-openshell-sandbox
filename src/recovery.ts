@@ -1,3 +1,4 @@
+import { attemptPattern, isAttemptId, isScopeName } from './validation.js';
 export interface CleanupRecovery {
   environmentId: string;
   gateway: string;
@@ -5,9 +6,6 @@ export interface CleanupRecovery {
   configHome?: string;
   rejectedAttemptIds: string[];
 }
-
-const attemptPattern =
-  '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 
 export function parseCleanupRecovery(
   config: Record<string, unknown>,
@@ -27,18 +25,14 @@ export function parseCleanupRecovery(
       !environmentId.trim() ||
       environmentId.includes('\0') ||
       environments.has(environmentId) ||
-      typeof gateway !== 'string' ||
-      !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(gateway) ||
-      typeof workspace !== 'string' ||
-      !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(workspace) ||
+      !isScopeName(gateway) ||
+      !isScopeName(workspace) ||
       (configHome !== undefined &&
         (typeof configHome !== 'string' ||
           !configHome.startsWith('/') ||
           configHome.includes('\0'))) ||
       !Array.isArray(rejectedAttemptIds) ||
-      rejectedAttemptIds.some(
-        (id) => typeof id !== 'string' || !new RegExp(attemptPattern).test(id),
-      ) ||
+      rejectedAttemptIds.some((id) => !isAttemptId(id)) ||
       Object.keys(value).some(
         (key) =>
           ![

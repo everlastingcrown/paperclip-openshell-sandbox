@@ -1,3 +1,4 @@
+import { remaining, systemClock, type Clock } from './deadline.js';
 import { spawn } from 'node:child_process';
 import type { Config } from './config.js';
 export const MAX_STDIN = 4 * 1024 * 1024;
@@ -66,7 +67,11 @@ export function commandFailure(
   }
   return new OpenShellCommandError(
     `OpenShell sandbox ${operation} ${result.timedOut ? 'timed out' : `failed (exit ${result.exitCode ?? 'none'}${result.signal ? `, signal ${result.signal}` : ''})`}; gateway=${c.gateway}, workspace=${c.workspace}, configHome=${c.configHome ?? 'inherited/default'}: ${reason}`,
-    !result.timedOut && allocationImpossible,
+    operation === 'create' &&
+      !result.timedOut &&
+      result.signal === null &&
+      result.exitCode !== null &&
+      allocationImpossible,
   );
 }
 export type Runner = (
@@ -77,90 +82,112 @@ export type Runner = (
   env?: { XDG_CONFIG_HOME?: string },
 ) => Promise<CommandResult>;
 export function checkStdin(stdin = '') {
+  if (typeof stdin !== 'string') throw new Error('Invalid execution stdin');
   if (Buffer.byteLength(stdin) > MAX_STDIN)
     throw new Error('stdin exceeds OpenShell 4 MiB limit');
 }
-export const run: Runner = async (
-  executable,
-  args,
-  timeoutMs,
-  stdin = '',
-  overrides = {},
-) => {
-  checkStdin(stdin);
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
-    throw new Error('Operation deadline exceeded');
-  return new Promise((resolve, reject) => {
-    // Endpoint overrides would bypass the explicitly selected gateway scope.
-    const env: NodeJS.ProcessEnv = { ...process.env, ...overrides };
-    delete env.OPENSHELL_GATEWAY_ENDPOINT;
-    const child = spawn(executable, args, {
-      shell: false,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env,
-      detached: process.platform !== 'win32',
-    });
-    const out: Buffer[] = [];
-    const err: Buffer[] = [];
-    let size = 0;
-    let timedOut = false;
-    let overflow = false;
-    const kill = (signal: NodeJS.Signals) => {
-      try {
-        if (process.platform !== 'win32' && child.pid)
-          process.kill(-child.pid, signal);
-        else child.kill(signal);
-      } catch {
-        /* already exited */
-      }
-    };
-    let hard: ReturnType<typeof setTimeout> | undefined;
-    const terminate = () => {
-      kill('SIGTERM');
-      hard ??= setTimeout(() => kill('SIGKILL'), 250);
-    };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      terminate();
-    }, timeoutMs);
-    const capture = (target: Buffer[], chunk: Buffer) => {
-      size += chunk.length;
-      if (size > MAX_OUTPUT) {
-        overflow = true;
+export function createRunner(spawnProcess: typeof spawn = spawn): Runner {
+  return async (executable, args, timeoutMs, stdin = '', overrides = {}) => {
+    checkStdin(stdin);
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+      throw new Error('Operation deadline exceeded');
+    return new Promise((resolve, reject) => {
+      // Endpoint overrides would bypass the explicitly selected gateway scope.
+      const env: NodeJS.ProcessEnv = { ...process.env, ...overrides };
+      delete env.OPENSHELL_GATEWAY_ENDPOINT;
+      const child = spawnProcess(executable, args, {
+        shell: false,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env,
+        detached: process.platform !== 'win32',
+      });
+      const out: Buffer[] = [];
+      const err: Buffer[] = [];
+      let size = 0;
+      let timedOut = false;
+      let overflow = false;
+      let ioFailed = false;
+      let settled = false;
+      const kill = (signal: NodeJS.Signals) => {
+        try {
+          if (process.platform !== 'win32' && child.pid)
+            process.kill(-child.pid, signal);
+          else child.kill(signal);
+        } catch {
+          /* already exited */
+        }
+      };
+      let hard: ReturnType<typeof setTimeout> | undefined;
+      const terminate = () => {
+        if (settled) return;
+        kill('SIGTERM');
+        hard ??= setTimeout(() => kill('SIGKILL'), 250);
+      };
+      const timer = setTimeout(() => {
+        timedOut = true;
         terminate();
-      } else target.push(chunk);
-    };
-    child.stdout.on('data', (chunk) => capture(out, chunk));
-    child.stderr.on('data', (chunk) => capture(err, chunk));
-    child.stdin.on('error', (error) => {
-      if ((error as NodeJS.ErrnoException).code !== 'EPIPE') terminate();
+      }, timeoutMs);
+      const capture = (target: Buffer[], chunk: Buffer) => {
+        if (settled || overflow) return;
+        size += chunk.length;
+        if (size > MAX_OUTPUT) {
+          overflow = true;
+          terminate();
+        } else target.push(chunk);
+      };
+      child.stdout.on('data', (chunk) => capture(out, chunk));
+      child.stderr.on('data', (chunk) => capture(err, chunk));
+      const ioFailure = () => {
+        ioFailed = true;
+        terminate();
+      };
+      child.stdout.on('error', ioFailure);
+      child.stderr.on('error', ioFailure);
+      child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+        if (error.code !== 'EPIPE') ioFailure();
+      });
+      const finish = (error?: Error, result?: CommandResult) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (hard) clearTimeout(hard);
+        if (error) reject(error);
+        else resolve(result!);
+      };
+      child.once('error', (error: NodeJS.ErrnoException) => {
+        const code = /^E[A-Z]+$/.test(error.code ?? '')
+          ? error.code
+          : 'spawn error';
+        finish(
+          new OpenShellCommandError(
+            `Unable to start OpenShell CLI (${code}); check executable and worker PATH`,
+            true,
+          ),
+        );
+      });
+      child.once('close', (exitCode, signal) => {
+        if (overflow)
+          finish(
+            new OpenShellCommandError('OpenShell output exceeds 16 MiB limit'),
+          );
+        else if (ioFailed)
+          finish(
+            new OpenShellCommandError('OpenShell CLI input/output failed'),
+          );
+        else
+          finish(undefined, {
+            stdout: Buffer.concat(out).toString('utf8'),
+            stderr: Buffer.concat(err).toString('utf8'),
+            exitCode,
+            signal,
+            timedOut,
+          });
+      });
+      child.stdin.end(stdin);
     });
-    child.once('error', (error: NodeJS.ErrnoException) => {
-      clearTimeout(timer);
-      if (hard) clearTimeout(hard);
-      reject(
-        new OpenShellCommandError(
-          `Unable to start OpenShell CLI (${error.code ?? 'spawn error'}); check executable and worker PATH`,
-          true,
-        ),
-      );
-    });
-    child.once('close', (exitCode, signal) => {
-      clearTimeout(timer);
-      if (hard) clearTimeout(hard);
-      if (overflow) reject(new Error('OpenShell output exceeds 16 MiB limit'));
-      else
-        resolve({
-          stdout: Buffer.concat(out).toString('utf8'),
-          stderr: Buffer.concat(err).toString('utf8'),
-          exitCode,
-          signal,
-          timedOut,
-        });
-    });
-    child.stdin.end(stdin);
-  });
-};
+  };
+}
+export const run: Runner = createRunner();
 export function scope(c: Config) {
   return ['--gateway', c.gateway, '--workspace', c.workspace];
 }
@@ -169,11 +196,14 @@ export async function lifecycle(
   args: string[],
   deadline: number,
   runner: Runner,
+  clock: Clock = systemClock,
 ): Promise<string> {
-  const result = await runner(
+  const timeoutMs = remaining(deadline, clock);
+  const result = await invoke(
+    runner,
     c.executable,
     [...scope(c), 'sandbox', ...args],
-    deadline - Date.now(),
+    timeoutMs,
     undefined,
     c.configHome ? { XDG_CONFIG_HOME: c.configHome } : {},
   );
@@ -192,4 +222,19 @@ export function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('Invalid OpenShell response shape');
   return value as Record<string, unknown>;
+}
+
+// Injected runners and platform errors must not forward arbitrary messages.
+export async function invoke(
+  runner: Runner,
+  ...args: Parameters<Runner>
+): Promise<CommandResult> {
+  try {
+    return await runner(...args);
+  } catch (error) {
+    if (error instanceof OpenShellCommandError) throw error;
+    throw new OpenShellCommandError(
+      'OpenShell CLI execution failed; check worker access and CLI availability',
+    );
+  }
 }
