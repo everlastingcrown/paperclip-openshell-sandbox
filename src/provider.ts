@@ -37,6 +37,7 @@ import {
   type Runner,
 } from './cli.js';
 import { pluginId } from './manifest.js';
+import type { CleanupRecovery } from './recovery.js';
 const hash = (s: string) => createHash('sha256').update(s).digest('hex');
 const fingerprint = (c: Config) =>
   hash(JSON.stringify([c.gateway, c.workspace]));
@@ -153,6 +154,12 @@ function verify(s: Sandbox, i: Identity) {
 }
 export class OpenShellProvider {
   private logger?: PluginLogger;
+  private cleanupRecovery?: (companyId: string) => Promise<CleanupRecovery[]>;
+  setCleanupRecovery(
+    resolve: (companyId: string) => Promise<CleanupRecovery[]>,
+  ) {
+    this.cleanupRecovery = resolve;
+  }
   setLogger(logger: PluginLogger) {
     this.logger = logger;
   }
@@ -163,6 +170,17 @@ export class OpenShellProvider {
   private config(p: { driverKey: string; config: Record<string, unknown> }) {
     if (p.driverKey !== 'openshell') throw new Error('Unsupported driver key');
     return parseConfig(p.config);
+  }
+  private async cleanupConfig(p: Release) {
+    const c = this.config(p);
+    const recovery = (await this.cleanupRecovery?.(p.companyId))?.find(
+      (entry) =>
+        entry.environmentId === p.environmentId &&
+        entry.gateway === c.gateway &&
+        entry.workspace === c.workspace,
+    );
+    if (recovery?.configHome) c.configHome = recovery.configHome;
+    return { c, recovery };
   }
   async probe(
     p: PluginEnvironmentProbeParams,
@@ -527,7 +545,7 @@ export class OpenShellProvider {
     return this.destroy(p);
   }
   async stop(p: Release): Promise<PluginEnvironmentTerminationReceipt> {
-    const c = this.config(p);
+    const { c } = await this.cleanupConfig(p);
     const i = identity(p, p.providerLeaseId, p.leaseMetadata, c);
     const deadline = Date.now() + c.timeoutMs;
     const s = await this.inspect(c, i.name, deadline);
@@ -540,7 +558,7 @@ export class OpenShellProvider {
   }
   async destroy(p: Release): Promise<PluginEnvironmentTerminationReceipt> {
     if (p.resourceDisposition === 'stop_and_retain') return this.stop(p);
-    const c = this.config(p);
+    const { c, recovery } = await this.cleanupConfig(p);
     const deadline = Date.now() + c.timeoutMs;
     let i: Identity;
     const failed = p.leaseMetadata?.failedCreateCleanup;
@@ -579,16 +597,26 @@ export class OpenShellProvider {
       // Versions before this fix always sent 46-character names, rejected
       // before allocation by v0.1.2's 19-character validation. A successful
       // scoped list confirms absence; these attempts cannot appear later.
-      if (!s && i.name === legacyName(String(object(failed).attemptId))) {
-        this.logger?.info('Reconciled rejected legacy OpenShell allocation', {
+      if (
+        !s &&
+        (i.name === legacyName(String(object(failed).attemptId)) ||
+          recovery?.rejectedAttemptIds.includes(
+            String(object(failed).attemptId),
+          ))
+      ) {
+        this.logger?.info('Reconciled rejected OpenShell allocation', {
           sandboxName: i.name,
+          companyId: p.companyId,
+          environmentId: p.environmentId,
+          operatorConfirmed:
+            i.name !== legacyName(String(object(failed).attemptId)),
         });
         return { providerLeaseId: p.providerLeaseId!, state: 'destroyed' };
       }
       if (s) verify(s, i);
       throw new PluginEnvironmentCreationCleanupError(
         [],
-        `Uncertain creation of ${i.name} requires durable identity before teardown${s ? '; observed ID will be persisted for the next sweep' : '; no sandbox observed, investigate the original create failure before manual reconciliation'}`,
+        `Uncertain creation of ${i.name} requires durable identity before teardown${s ? '; observed ID will be persisted for the next sweep' : `; no sandbox observed; verify original create outcome, then use plugin cleanupRecovery.rejectedAttemptIds for attempt ${String(object(failed).attemptId)} if creation was rejected`}`,
         {
           ...(failed as PluginEnvironmentCreationCleanup),
           ...(s ? { observedProviderLeaseId: s.id } : {}),

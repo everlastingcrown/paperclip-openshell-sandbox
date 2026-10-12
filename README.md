@@ -117,6 +117,43 @@ If an older plugin failed with these settings (`cpu: 1`, `memory: 512Mi`, `image
 
 If manual CLI access works but a gateway preflight fails, check whether the worker can find the registered gateway. A custom server `XDG_CONFIG_HOME` is not inherited by plugin workers; configure `configHome` as described above.
 
+### Recover cleanup while environment settings are locked
+
+Paperclip can prevent saving an Environment while its lease is pending cleanup. Old leases also use their recorded provider configuration, so changing the Environment does not necessarily repair their CLI config directory. Configure `cleanupRecovery` in the **OpenShell plugin settings**, independently of the Environment:
+
+```json
+{
+  "cleanupRecovery": [
+    {
+      "environmentId": "52e7ba17-a1aa-46ea-bbf4-007c41a00c70",
+      "gateway": "gateway",
+      "workspace": "default",
+      "configHome": "/paperclip/.config"
+    }
+  ]
+}
+```
+
+The worker reads these settings for the invoking company on every destroy or stop attempt. Matching requires the exact Environment ID, gateway and workspace. Only the cleanup config directory is overridden; sandbox identity and ownership labels still have to match. This also applies to `stop_and_retain`, which still stops and preserves the sandbox. Recovery settings do not change acquisition or execution configuration. Once cleanup completes, save the corrected Environment settings and remove the recovery entry.
+
+If a failed creation never returned an allocation ID and scoped lists keep showing no sandbox, automatic cleanup remains pending: a generic CLI exit 1 cannot prove that the gateway rejected creation. After verifying the original creation was rejected and cannot create a sandbox later, add its **full attempt UUID** to `rejectedAttemptIds` in the matching recovery entry. Obtain that UUID from the lease's `failedCreateCleanup.attemptId` or the updated destroy error; the `pc-...` name is a hash, not the UUID. For example:
+
+```json
+{
+  "cleanupRecovery": [
+    {
+      "environmentId": "c2346834-7ad0-4044-8c95-03ed42b7b9fb",
+      "gateway": "gateway",
+      "workspace": "default",
+      "configHome": "/paperclip/.config",
+      "rejectedAttemptIds": ["00000000-0000-0000-0000-000000000000"]
+    }
+  ]
+}
+```
+
+Replace the example UUID with the actual attempt UUID. Reconciliation requires a successful, complete scoped list confirming absence and logs the operator confirmation. List failures, malformed responses and ownership mismatches remain pending. If a matching sandbox appears, the provider returns its observed ID for Paperclip to persist before a subsequent retry deletes it, even if the attempt was marked rejected. There is no age-based automatic clearance of uncertain allocations. Remove the attempt confirmation after reconciliation.
+
 ## Releases and npm publisher setup
 
 Conventional commits drive semantic-release: `fix:` makes patch releases, `feat:` makes minor releases, and breaking-change commits make major releases. `main` publishes stable versions; `canary` publishes `-canary` prereleases on the `canary` npm tag. GitHub releases contain generated release notes. Publishing and npm/GitHub account configuration are separate operator actions.

@@ -5,6 +5,7 @@ import { dirname } from 'node:path';
 import { OpenShellProvider } from '../src/provider.js';
 import { configSchema, parseConfig } from '../src/config.js';
 import { createPlugin } from '../src/plugin.js';
+import { parseCleanupRecovery } from '../src/recovery.js';
 import {
   run,
   MAX_STDIN,
@@ -604,6 +605,172 @@ test('uncertain creation preserves pending cleanup; observation must be durable 
     leaseMetadata: { failedCreateCleanup: cleanup },
   });
   assert.equal(f.record, undefined);
+});
+test('plugin recovery repairs saved cleanup config without changing environment settings', async () => {
+  const f = fake();
+  const l = await f.provider.acquire(f.params);
+  const plugin = createPlugin(f.provider);
+  let settings: Record<string, unknown> = {};
+  const companies: string[] = [];
+  await plugin.definition.setup({
+    logger: { info() {}, debug() {}, warn() {}, error() {} },
+    config: {
+      async get(companyId: string) {
+        companies.push(companyId);
+        return settings;
+      },
+    },
+  } as any);
+  const before = JSON.stringify(f.params.config);
+  f.fail((args) =>
+    args.includes('list') &&
+    f.calls.at(-1)?.env?.XDG_CONFIG_HOME !== '/paperclip/.config'
+      ? { ...ok(), exitCode: 1, stderr: "Unknown gateway 'test'" }
+      : undefined,
+  );
+  await assert.rejects(
+    plugin.definition.onEnvironmentDestroyLease!(release(f, l)),
+    /not registered/,
+  );
+  settings = {
+    cleanupRecovery: [
+      {
+        environmentId: 'environment',
+        gateway: 'test',
+        configHome: '/paperclip/.config',
+      },
+    ],
+  };
+  assert.equal((await plugin.definition.onValidateConfig!(settings)).ok, true);
+  const start = f.calls.length;
+  await plugin.definition.onEnvironmentDestroyLease!(release(f, l));
+  assert.equal(f.record, undefined);
+  assert.ok(
+    f.calls
+      .slice(start)
+      .every((call) => call.env?.XDG_CONFIG_HOME === '/paperclip/.config'),
+  );
+  assert.deepEqual(companies, ['company', 'company']);
+  assert.equal(JSON.stringify(f.params.config), before);
+});
+test('explicit rejected-attempt recovery requires successful absence and preserves observed identity', async () => {
+  const f = fake();
+  f.fail((args) =>
+    args.includes('create')
+      ? { ...ok(), exitCode: 1, stderr: 'secret-token' }
+      : undefined,
+  );
+  let cleanup: any;
+  await assert.rejects(f.provider.acquire(f.params), (error: any) => {
+    cleanup = readEnvironmentCreationCleanupError(error);
+    assert.ok(cleanup);
+    assert.ok(!JSON.stringify(error).includes('secret-token'));
+    return true;
+  });
+  const p = {
+    ...f.params,
+    providerLeaseId: cleanup.providerLeaseId,
+    leaseMetadata: { failedCreateCleanup: cleanup },
+  };
+  const entry = {
+    environmentId: 'environment',
+    gateway: 'test',
+    workspace: 'default',
+    rejectedAttemptIds: [cleanup.attemptId],
+  };
+  for (const mismatch of [
+    { environmentId: 'other' },
+    { gateway: 'other' },
+    { workspace: 'other' },
+    { rejectedAttemptIds: [] },
+  ]) {
+    f.provider.setCleanupRecovery(async () => [{ ...entry, ...mismatch }]);
+    await assert.rejects(
+      f.provider.destroy(p),
+      PluginEnvironmentCreationCleanupError,
+    );
+  }
+  f.provider.setCleanupRecovery(async () => [entry]);
+  f.fail((args) =>
+    args.includes('list')
+      ? { ...ok(), exitCode: 1, stderr: 'connection refused' }
+      : undefined,
+  );
+  await assert.rejects(f.provider.destroy(p), /gateway connection failed/);
+  f.fail((args) => (args.includes('list') ? ok('malformed') : undefined));
+  await assert.rejects(f.provider.destroy(p), /Malformed/);
+  f.fail(undefined);
+  f.record = {
+    id: 'late-id',
+    name: cleanup.providerLeaseId,
+    workspace: 'default',
+    phase: 'Ready',
+    labels: { ...cleanup.labels, 'paperclip-company': 'foreign' },
+  };
+  await assert.rejects(f.provider.destroy(p), /ownership/);
+  f.record.labels = cleanup.labels;
+  await assert.rejects(f.provider.destroy(p), (error: any) => {
+    cleanup = readEnvironmentCreationCleanupError(error);
+    assert.equal(cleanup.observedProviderLeaseId, 'late-id');
+    return true;
+  });
+  assert.ok(!f.calls.some((call) => call.args.includes('delete')));
+  await f.provider.destroy({
+    ...p,
+    leaseMetadata: { failedCreateCleanup: cleanup },
+  });
+  assert.equal(f.record, undefined);
+  assert.equal((await f.provider.destroy(p)).state, 'destroyed');
+});
+test('cleanup recovery validates operator inputs', async () => {
+  assert.deepEqual(parseCleanupRecovery({}), []);
+  const entry = { environmentId: 'environment', gateway: 'test' };
+  for (const cleanupRecovery of [
+    'invalid',
+    [null],
+    [{ ...entry, configHome: 'relative' }],
+    [{ ...entry, rejectedAttemptIds: ['pc-name'] }],
+    [entry, entry],
+    [{ ...entry, gateway: 'bad gateway' }],
+    [{ ...entry, unexpected: true }],
+  ]) {
+    assert.throws(() => parseCleanupRecovery({ cleanupRecovery }), /Invalid/);
+    assert.equal(
+      (await createPlugin().definition.onValidateConfig!({ cleanupRecovery }))
+        .ok,
+      false,
+    );
+  }
+});
+test('stop-only recovery confirms stop and retains files', async () => {
+  const f = fake();
+  const l = await f.provider.acquire(f.params);
+  f.provider.setCleanupRecovery(async () => [
+    {
+      environmentId: 'environment',
+      gateway: 'test',
+      workspace: 'default',
+      configHome: '/paperclip/.config',
+      rejectedAttemptIds: [],
+    },
+  ]);
+  const start = f.calls.length;
+  assert.equal(
+    (
+      await f.provider.destroy({
+        ...release(f, l),
+        resourceDisposition: 'stop_and_retain',
+      })
+    ).state,
+    'stopped',
+  );
+  assert.equal(f.record.phase, 'Stopped');
+  assert.ok(
+    f.calls
+      .slice(start)
+      .every((call) => call.env?.XDG_CONFIG_HOME === '/paperclip/.config'),
+  );
+  assert.ok(!f.calls.some((call) => call.args.includes('delete')));
 });
 test('JSON and response validation fail closed', () => {
   assert.throws(() => json('not json'), /Malformed/);

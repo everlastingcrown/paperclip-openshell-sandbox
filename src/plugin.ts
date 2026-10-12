@@ -5,6 +5,7 @@ import {
 } from '@paperclipai/plugin-sdk';
 import { parseConfig, validateRuntimeImage } from './config.js';
 import { OpenShellProvider } from './provider.js';
+import { parseCleanupRecovery } from './recovery.js';
 export function createPlugin(provider = new OpenShellProvider()) {
   let logger: PluginLogger | undefined;
   const control = async <T>(
@@ -28,6 +29,17 @@ export function createPlugin(provider = new OpenShellProvider()) {
     async setup(ctx) {
       logger = ctx.logger;
       provider.setLogger(ctx.logger);
+      provider.setCleanupRecovery(async (companyId) =>
+        parseCleanupRecovery(await ctx.config.get(companyId)),
+      );
+    },
+    async onValidateConfig(config) {
+      try {
+        parseCleanupRecovery(config);
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, errors: [(error as Error).message] };
+      }
     },
     async onEnvironmentValidateConfig(p) {
       try {
