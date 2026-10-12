@@ -1,0 +1,107 @@
+# OpenShell 0.1.2: Paperclip workspace + OpenCode bootstrap.
+# Set provider config policyFile to this file's absolute path on the worker host.
+# This is a starting policy, not a grant for every model or project dependency.
+version: 1
+
+landlock:
+  compatibility: hard_requirement
+
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /bin
+    - /usr
+    - /lib
+    - /lib64
+    - /etc
+    - /proc
+    - /dev/urandom
+    - /dev/random
+  read_write:
+    # The driver must create paperclip-workspace beneath /sandbox.
+    - /sandbox
+    - /tmp
+    - /dev/null
+    # Keep only the actual sandbox HOME; these are common image/runtime choices.
+    # Includes OpenCode's executable, config, cache, data, and user-local PATH link.
+    - /root
+    - /home/node
+    - /home/sandbox
+    # Needed for the supplied install command's system-wide symlink branch.
+    # Remove after baking OpenCode into an image; this allows binary changes.
+    - /usr/local/bin
+
+network_policies:
+  opencode_install:
+    binaries:
+      - path: /usr/bin/curl
+      - path: /usr/local/bin/curl
+    endpoints:
+      - host: opencode.ai
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: raw.githubusercontent.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: api.github.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: github.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: release-assets.githubusercontent.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+
+  opencode_model_catalog:
+    # Match the real executable, not /usr/local/bin/opencode if it is a symlink.
+    binaries:
+      - path: /root/.opencode/bin/opencode
+      - path: /home/node/.opencode/bin/opencode
+      - path: /home/sandbox/.opencode/bin/opencode
+      - path: /usr/local/bin/opencode
+    endpoints:
+      - host: models.dev
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+
+  npm_downloads:
+    binaries:
+      # Official Node images install Node here; adapt for your image.
+      - path: /usr/local/bin/node
+    endpoints:
+      - host: registry.npmjs.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+        allow_encoded_slash: true
+
+  # Attach an authenticated OpenShell provider via provider config `providers`.
+  # Inspect its contributed endpoint/binary rules before adding overlapping rules.
+  # If using an independently configured model service, add its actual hostname
+  # and real OpenCode executable here. This commented example grants only POSTs:
+  # model_api:
+  #   binaries:
+  #     - path: /home/sandbox/.opencode/bin/opencode
+  #   endpoints:
+  #     - host: your-model-api.example.com
+  #       port: 443
+  #       protocol: rest
+  #       enforcement: enforce
+  #       rules:
+  #         - allow:
+  #             method: POST
+  #             path: /v1/**
