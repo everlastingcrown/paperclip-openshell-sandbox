@@ -18,6 +18,8 @@ export function parseConfig(
   return parseRuntimeConfig(resolvePreset(raw, pluginConfig));
 }
 
+const { oneOf: _sourceChoice, ...environmentSchema } = runtimeConfigSchema;
+void _sourceChoice;
 const runtimeProperties = Object.fromEntries(
   Object.entries(runtimeConfigSchema.properties)
     .filter(([key]) => key !== 'policy' && key !== 'policyFile')
@@ -28,9 +30,8 @@ const runtimeProperties = Object.fromEntries(
     }),
 );
 export const configSchema = {
-  ...runtimeConfigSchema,
+  ...environmentSchema,
   required: [],
-  anyOf: [{ required: ['profile'] }, { required: ['gateway', 'image'] }],
   properties: {
     ...runtimeProperties,
     provider: { type: 'string', const: 'openshell' },

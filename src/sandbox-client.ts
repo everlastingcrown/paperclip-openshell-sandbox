@@ -7,6 +7,7 @@ import {
   checkStdin,
   type Runner,
 } from './cli.js';
+import { validatePolicyFile } from './policy.js';
 import type { Config } from './config.js';
 import { sandbox, verify, type Sandbox, type Identity } from './identity.js';
 import { systemClock, type Clock } from './deadline.js';
@@ -18,6 +19,29 @@ export class SandboxClient {
   ) {}
   command(c: Config, args: string[], deadline: number) {
     return lifecycle(c, args, deadline, this.runner, this.clock);
+  }
+  async preflight(c: Config, name: string, deadline: number) {
+    await validatePolicyFile(c);
+    if (await this.inspect(c, name, deadline))
+      throw new Error('Sandbox name already exists before allocation');
+    if (c.template) {
+      const value = object(
+        json(
+          await this.command(
+            c,
+            ['template', 'get', c.template, '--output', 'json'],
+            deadline,
+          ),
+        ),
+      );
+      if (
+        value.name !== c.template ||
+        value.workspace !== c.workspace ||
+        typeof value.id !== 'string' ||
+        !value.id.trim()
+      )
+        throw new Error('Invalid sandbox template JSON identity');
+    }
   }
   async inspect(
     c: Config,
@@ -75,12 +99,13 @@ export class SandboxClient {
       const s = await this.inspect(c, i.name, deadline);
       if (!s) {
         if (state === 'missing') return;
-        throw new Error('Sandbox missing');
+        if (state !== 'Ready') throw new Error('Sandbox missing');
       }
-      verify(s, i);
-      if (s.phase === state) return;
+      if (s) verify(s, i);
+      if (s?.phase === state) return;
       if (
         state === 'Ready' &&
+        s &&
         ['Error', 'Completed', 'Deleting'].includes(s.phase)
       )
         throw new Error(

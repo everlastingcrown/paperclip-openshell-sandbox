@@ -43,6 +43,14 @@ export function fake(
     if (result) return result;
     const flag = (key: string) => args[args.indexOf(key) + 1];
     const operation = args[5];
+    if (operation === 'template')
+      return ok(
+        JSON.stringify({
+          id: 'template-id',
+          name: args[7],
+          workspace: 'default',
+        }),
+      );
     if (operation === 'create') {
       const labels = Object.fromEntries(
         args.flatMap((a, index) =>

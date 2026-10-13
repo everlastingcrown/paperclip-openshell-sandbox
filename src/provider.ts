@@ -54,27 +54,46 @@ export class OpenShellProvider {
   async acquire(p: Acquire) {
     return acquire(p, await this.config(p), this.client, this.logger);
   }
-  private async config(
-    p: {
-      driverKey: string;
-      companyId: string;
-      config: Record<string, unknown>;
-    },
-    control = false,
-  ) {
+  private async config(p: {
+    driverKey: string;
+    companyId: string;
+    config: Record<string, unknown>;
+  }) {
     if (p.driverKey !== 'openshell') throw new Error('Unsupported driver key');
     const settings = (await this.pluginConfig?.(p.companyId)) ?? {};
-    return control
-      ? parseRuntimeConfig(resolvePreset(p.config, settings, true))
-      : parseConfig(p.config, settings);
+    return parseConfig(p.config, settings);
   }
   private async cleanupConfig(p: Release) {
     const settings = await this.pluginConfig?.(p.companyId);
     if (p.driverKey !== 'openshell') throw new Error('Unsupported driver key');
-    const c = parseRuntimeConfig(resolvePreset(p.config, settings ?? {}, true));
     const entries = this.cleanupRecovery
       ? await this.cleanupRecovery(p.companyId)
       : parseCleanupRecovery(settings ?? {});
+    const scopeRecovery = entries.find(
+      (entry) => entry.environmentId === p.environmentId,
+    );
+    const metadata = p.leaseMetadata?.openshell;
+    const saved =
+      metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+        ? (metadata as Record<string, unknown>)
+        : {};
+    const resolved = resolvePreset(p.config, settings ?? {}, true);
+    // Runtime/policy edits cannot block teardown. Explicit scope still wins and
+    // ownership validation below rejects a changed gateway or workspace.
+    const c = parseRuntimeConfig({
+      gateway: scopeRecovery?.gateway ?? saved.gateway,
+      workspace:
+        saved.workspace ??
+        (resolved.gateway ? 'default' : scopeRecovery?.workspace),
+      executable: saved.executable,
+      configHome: saved.configHome,
+      ...resolved,
+      image: 'cleanup',
+      template: undefined,
+      cpu: undefined,
+      memory: undefined,
+      providers: [],
+    });
     const recovery = entries?.find(
       (entry) =>
         entry.environmentId === p.environmentId &&
@@ -90,7 +109,7 @@ export class OpenShellProvider {
     try {
       const c = await this.config(p);
       validateRuntimeImage(c);
-      await this.client.inspect(
+      await this.client.preflight(
         c,
         '',
         this.client.clock.now() + Math.min(c.timeoutMs, 30_000),
@@ -182,7 +201,7 @@ export class OpenShellProvider {
     p: Release,
   ): Promise<PluginEnvironmentTerminationReceipt | void> {
     if (p.resourceDisposition === 'stop_and_retain') return this.stop(p);
-    const c = await this.config(p, true);
+    const { c } = await this.cleanupConfig(p);
     const i = identity(p, p.providerLeaseId, p.leaseMetadata, c);
     if (i.reuseLease && c.reuseLease) {
       if (p.cancelActiveWork) return this.stop(p);

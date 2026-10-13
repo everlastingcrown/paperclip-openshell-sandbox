@@ -29,6 +29,8 @@ export interface Identity {
   labels: Record<string, string>;
   remotePath: string;
   reuseLease: boolean;
+  executable?: string;
+  configHome?: string;
 }
 export interface Sandbox {
   id: string;
@@ -90,6 +92,8 @@ export function identity(
     remotePath,
     reuseLease: m.reuseLease,
     labels,
+    ...(m.executable !== undefined ? { executable: c.executable } : {}),
+    ...(m.configHome !== undefined ? { configHome: c.configHome } : {}),
   };
 }
 export function cleanupIdentity(
