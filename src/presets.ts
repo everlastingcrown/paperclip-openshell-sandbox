@@ -93,10 +93,15 @@ export function parsePluginConfig(
 }
 
 function environmentInput(raw: Record<string, unknown>, control = false) {
-  const { policy, policyFile, provider, ...environment } = raw;
+  const { policy, policyFile, provider, archiveOnRelease, ...environment } =
+    raw;
   // Paperclip stores the sandbox provider selector alongside runtime settings.
   if (provider !== undefined && provider !== 'openshell')
     throw new Error('Invalid environment provider (expected "openshell")');
+  // Paperclip injects this probe flag; providers without archive support
+  // delete as usual, per the shared SandboxEnvironmentConfig contract.
+  if (archiveOnRelease !== undefined && typeof archiveOnRelease !== 'boolean')
+    throw new Error('Invalid archiveOnRelease (expected boolean)');
   if (
     !control &&
     [policy, policyFile].some(

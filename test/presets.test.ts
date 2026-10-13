@@ -42,6 +42,36 @@ test('Paperclip provider routing works with profiles through probe and lifecycle
   assert.equal(f.record, undefined);
 });
 
+test('Paperclip archive probe flag permits allocation and ordinary release cleanup', async () => {
+  for (const archiveOnRelease of [true, false]) {
+    const raw = {
+      provider: 'openshell',
+      profile: 'standard',
+      reuseLease: false,
+      archiveOnRelease,
+    };
+    assert.deepEqual(
+      parseConfig(raw, settings),
+      parseConfig({ profile: 'standard', reuseLease: false }, settings),
+    );
+    const f = fake(raw, settings);
+    const validated = await createPlugin(f.provider).definition
+      .onEnvironmentValidateConfig!({ driverKey: 'openshell', config: raw });
+    assert.equal(validated.ok, true);
+    assert.deepEqual(validated.normalizedConfig, raw);
+    assert.equal((await f.provider.probe(f.params)).ok, true);
+    const lease = await f.provider.acquire(f.params);
+    await f.provider.release(release(f, lease));
+    assert.equal(f.record, undefined);
+  }
+  const f = fake({ archiveOnRelease: 'true' });
+  assert.equal(
+    (await f.provider.probe(f.params)).summary,
+    'Invalid archiveOnRelease (expected boolean)',
+  );
+  assert.equal(f.calls.length, 0);
+});
+
 test('environment validation names unknown fields without including values', async () => {
   const f = fake(
     { profile: 'standard', typo: 'private-value', extra: 'private-value' },

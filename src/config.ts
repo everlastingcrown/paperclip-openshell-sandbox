@@ -34,6 +34,11 @@ export const configSchema = {
   properties: {
     ...runtimeProperties,
     provider: { type: 'string', const: 'openshell' },
+    archiveOnRelease: {
+      type: 'boolean',
+      description:
+        'Paperclip probe flag; OpenShell uses ordinary release cleanup',
+    },
     profile: { type: 'string', description: 'Named plugin runtime profile' },
     policyPreset: {
       type: 'string',
