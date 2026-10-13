@@ -33,6 +33,7 @@ export const configSchema = {
   anyOf: [{ required: ['profile'] }, { required: ['gateway', 'image'] }],
   properties: {
     ...runtimeProperties,
+    provider: { type: 'string', const: 'openshell' },
     profile: { type: 'string', description: 'Named plugin runtime profile' },
     policyPreset: {
       type: 'string',

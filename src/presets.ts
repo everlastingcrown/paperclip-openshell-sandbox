@@ -93,7 +93,10 @@ export function parsePluginConfig(
 }
 
 function environmentInput(raw: Record<string, unknown>, control = false) {
-  const { policy, policyFile, ...environment } = raw;
+  const { policy, policyFile, provider, ...environment } = raw;
+  // Paperclip stores the sandbox provider selector alongside runtime settings.
+  if (provider !== undefined && provider !== 'openshell')
+    throw new Error('Invalid environment provider (expected "openshell")');
   if (
     !control &&
     [policy, policyFile].some(
@@ -104,12 +107,13 @@ function environmentInput(raw: Record<string, unknown>, control = false) {
     throw new Error(
       'Move policy/policyFile to plugin policies and select policyPreset',
     );
-  if (
-    Object.keys(environment).some(
-      (key) => ![...profileKeys, 'profile'].includes(key),
-    )
-  )
-    throw new Error('Unknown environment configuration field');
+  const unknown = Object.keys(environment).filter(
+    (key) => ![...profileKeys, 'profile'].includes(key),
+  );
+  if (unknown.length)
+    throw new Error(
+      `Unknown environment configuration field${unknown.length === 1 ? '' : 's'}: ${unknown.map((key) => JSON.stringify(key)).join(', ')}`,
+    );
   const profileName = reference(environment.profile, 'profile');
   return { environment, profileName };
 }

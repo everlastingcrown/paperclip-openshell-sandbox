@@ -22,6 +22,45 @@ const settings = {
   },
 };
 
+test('Paperclip provider routing works with profiles through probe and lifecycle', async () => {
+  const raw = { provider: 'openshell', profile: 'standard' };
+  assert.deepEqual(
+    parseConfig(raw, settings),
+    parseConfig({ profile: 'standard' }, settings),
+  );
+  const f = fake(raw, settings);
+  const plugin = createPlugin(f.provider);
+  const validated = await plugin.definition.onEnvironmentValidateConfig!({
+    driverKey: 'openshell',
+    config: raw,
+  });
+  assert.equal(validated.ok, true);
+  assert.deepEqual(validated.normalizedConfig, raw);
+  assert.equal((await f.provider.probe(f.params)).ok, true);
+  const lease = await f.provider.acquire(f.params);
+  await f.provider.destroy(release(f, lease));
+  assert.equal(f.record, undefined);
+});
+
+test('environment validation names unknown fields without including values', async () => {
+  const f = fake(
+    { profile: 'standard', typo: 'private-value', extra: 'private-value' },
+    settings,
+  );
+  const result = await f.provider.probe(f.params);
+  assert.equal(result.ok, false);
+  assert.equal(
+    result.summary,
+    'Unknown environment configuration fields: "typo", "extra"',
+  );
+  assert.equal(JSON.stringify(result).includes('private-value'), false);
+  assert.equal(f.calls.length, 0);
+  assert.throws(
+    () => parseConfig({ ...config, provider: 'other' }),
+    /Invalid environment provider/,
+  );
+});
+
 test('profiles merge explicit overrides before applying defaults', () => {
   const resolved = parseConfig(
     {
