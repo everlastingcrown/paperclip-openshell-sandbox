@@ -36,7 +36,7 @@ Ordinary tests need no gateway. Build before `check:package`, which installs the
 
 Live verification requires `OPENSHELL_SMOKE_CONFIG` (absolute JSON config path) and `PAPERCLIP_SOURCE` (installed clean Paperclip checkout at `v2026.1005.0`), then `pnpm test:live`. It creates and destroys a real sandbox and exercises host sync fallbacks. Missing variables produce `SKIP`; report live coverage separately.
 
-Use a dedicated branch and PR for changes; include behavior changes and validation evidence. PR and release validation both run ESLint. Husky formats/fixes staged files before commits, enforces Conventional Commits, and runs tests before pushes. `fix:`/`feat:`/breaking changes drive releases. `main` publishes stable versions; `canary` publishes prereleases. Release preparation rebuilds and validates after version assignment.
+PR and release validation both run ESLint. Husky formats/fixes staged files before commits, enforces Conventional Commits, and runs tests before pushes. `fix:`/`feat:`/breaking changes drive releases. `main` publishes stable versions; `canary` publishes prereleases. Release preparation rebuilds and validates after version assignment.
 
 ## Key gotchas
 
