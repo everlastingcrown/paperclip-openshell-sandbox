@@ -43,6 +43,8 @@ export async function acquire(
     labels: labelsFor(p, attemptId),
     remotePath,
     reuseLease: c.reuseLease,
+    executable: c.executable,
+    ...(c.configHome ? { configHome: c.configHome } : {}),
   };
   const deadline = client.clock.now() + c.timeoutMs;
   const setupDeadline =
@@ -63,14 +65,13 @@ export async function acquire(
   try {
     // Fail gateway, worker config and response-contract errors before a
     // create request can leave a durable uncertain-cleanup record.
-    await client.inspect(c, i.name, setupDeadline);
+    await client.preflight(c, i.name, setupDeadline);
     phase = 'allocation';
     const args = [
       'create',
       '--name',
       i.name,
-      '--from',
-      c.image,
+      ...(c.template ? ['--template', c.template] : ['--from', c.image]),
       '--detach',
       '--no-tty',
       '--no-auto-providers',
@@ -137,7 +138,7 @@ export async function acquire(
         setup.stderr.includes('paperclip: cannot create workspace') ||
         setup.stderr.includes('paperclip: workspace is not writable');
       throw new Error(
-        `Runtime workspace/tool check failed for image ${c.image}: ${missing.length ? `missing ${missing.join(', ')}` : workspace ? `cannot write ${remotePath}; check image user and filesystem policy` : commandFailure(c, 'exec', setup).message}`,
+        `Runtime workspace/tool check failed for ${c.template ? `template ${c.template}` : `image ${c.image}`}: ${missing.length ? `missing ${missing.join(', ')}` : workspace ? `cannot write ${remotePath}; check image user and filesystem policy` : commandFailure(c, 'exec', setup).message}`,
       );
     }
     return lease(i);
@@ -155,18 +156,29 @@ export async function acquire(
         `OpenShell acquisition failed during ${phase}; no allocation created: ${reason}`,
         { cause: error },
       );
-    try {
-      const found = await client.inspect(c, i.name, deadline);
-      if (!found) {
-        if (!i.id)
-          throw new Error('Allocation outcome uncertain', { cause: error });
-      } else {
-        verify(found, i);
-        i.id = found.id;
-        await client.command(c, ['delete', i.name], deadline);
-        await client.wait(c, i, 'missing', deadline);
+    let cleanupError: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const found = await client.inspect(c, i.name, deadline);
+        if (!found) {
+          if (!i.id)
+            throw new Error('Allocation outcome uncertain', { cause: error });
+        } else {
+          verify(found, i);
+          i.id = found.id;
+          await client.command(c, ['delete', i.name], deadline);
+          await client.wait(c, i, 'missing', deadline);
+        }
+        cleanupError = undefined;
+        break;
+      } catch (failure) {
+        cleanupError = failure;
+        const budget = deadline - client.clock.now();
+        if (attempt === 2 || budget <= 1) break;
+        await client.clock.sleep(Math.min(500, Math.floor(budget / 2)));
       }
-    } catch (cleanupError) {
+    }
+    if (cleanupError) {
       const cleanupReason = (cleanupError as Error).message;
       logger?.error('OpenShell allocation cleanup requires reconciliation', {
         sandboxName: i.name,

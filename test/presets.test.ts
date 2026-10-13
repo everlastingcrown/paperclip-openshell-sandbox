@@ -149,7 +149,7 @@ test('preset configuration rejects malformed settings without leaking YAML', asy
     { profiles: { 'bad/name': {} } },
     { profiles: { test: { profile: 'other' } } },
     { profiles: { test: { policy } } },
-    { profiles: { test: { policyFile: '/file' } } },
+    { profiles: { test: { policyFile: 'relative' } } },
     { profiles: { test: { policyPreset: 'missing' } } },
     { profiles: { test: { memory: 'bad' } } },
     { profiles: { test: { providers: [42] } } },
@@ -261,6 +261,8 @@ test('save validation checks fields and defers reference lookup to scoped operat
   } as any);
   for (const raw of [
     config,
+    {},
+    { policyPreset: 'development' },
     { profile: 'missing' },
     { ...config, policyPreset: 'missing' },
     { profile: 'missing', policyPreset: 'missing', reuseLease: false },
@@ -273,8 +275,6 @@ test('save validation checks fields and defers reference lookup to scoped operat
     assert.deepEqual(result.normalizedConfig, raw);
   }
   for (const raw of [
-    {},
-    { policyPreset: 'development' },
     { profile: '../invalid' },
     { ...config, policyPreset: 42 },
     { profile: 'standard', memory: 'bad' },
@@ -383,7 +383,7 @@ test('legacy direct policy inputs remain usable only for lease cleanup', async (
   assert.equal(f.record, undefined);
 });
 
-test('profile scope changes and deletion fail closed for existing leases', async () => {
+test('profile scope changes fail closed and deletion retains cleanup access', async () => {
   const f = fake({ profile: 'standard' }, settings);
   let current: Record<string, unknown> = settings;
   f.provider.setPluginConfig(async () => current);
@@ -396,10 +396,7 @@ test('profile scope changes and deletion fail closed for existing leases', async
     /scope mismatch/,
   );
   current = {};
-  await assert.rejects(
-    f.provider.destroy({ ...release(f, lease), config: params.config }),
-    /Unknown profile/,
-  );
   assert.equal(f.calls.length, before);
-  assert.ok(f.record);
+  await f.provider.destroy({ ...release(f, lease), config: params.config });
+  assert.equal(f.record, undefined);
 });

@@ -1,4 +1,5 @@
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, stat, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Config } from './config.js';
@@ -8,6 +9,18 @@ export interface PolicyFiles {
   writeFile: typeof writeFile;
   rm: typeof rm;
 }
+export async function validatePolicyFile(c: Config) {
+  if (!c.policyFile) return;
+  try {
+    if (!(await stat(c.policyFile)).isFile()) throw new Error();
+    await access(c.policyFile, constants.R_OK);
+  } catch {
+    throw new Error(
+      'Policy file cannot be read; use an absolute regular file accessible to the Paperclip worker',
+    );
+  }
+}
+
 const files: PolicyFiles = { mkdtemp, writeFile, rm };
 export async function withPolicyFile<T>(
   c: Config,

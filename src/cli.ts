@@ -31,7 +31,36 @@ export function commandFailure(
     .replace(/\s+/g, ' ');
   let reason = 'check gateway authentication, policy and CLI compatibility';
   let allocationImpossible = false;
-  if (/name exceeds.*maximum length/i.test(text)) {
+  // These diagnostics originate before CreateSandbox in the pinned CLI.
+  // The provisioning marker is emitted only after allocation succeeds; never
+  // interpret a subsequent watch/runtime error as definitive rejection.
+  const allocationObserved =
+    /Provisioning sandbox \(structured output on stdout\)/i.test(text);
+  if (
+    /failed to (?:parse sandbox policy YAML|decode sandbox policy fields)|unknown field '[^']*' in authored policy|unsupported policy version|sandbox policy is not valid UTF-8|policy exceeds the \d+-byte input limit/i.test(
+      text,
+    )
+  ) {
+    reason =
+      'policy YAML is invalid; check the OpenShell v0.1.2 policy schema (version, filesystem_policy, process and network_policies)';
+    allocationImpossible = true;
+  } else if (
+    /failed to (?:inspect|read) sandbox policy|sandbox policy source is not a regular file/i.test(
+      text,
+    )
+  ) {
+    reason =
+      'policy file cannot be read; use an absolute path accessible to the Paperclip worker';
+    allocationImpossible = true;
+  } else if (
+    /missing required provider|provider '[^']*' not found and no provider profile named|no existing local credentials found for provider profile/i.test(
+      text,
+    )
+  ) {
+    reason =
+      'credential provider is unavailable; create and authenticate it in the selected OpenShell gateway/workspace before testing';
+    allocationImpossible = true;
+  } else if (/name exceeds.*maximum length/i.test(text)) {
     reason = 'sandbox name exceeds the OpenShell 19-character limit';
     allocationImpossible = true;
   } else if (/Unknown gateway/i.test(text)) {
@@ -48,6 +77,13 @@ export function commandFailure(
     reason =
       'CLI cannot resolve its config directory; set configHome for the plugin worker';
     allocationImpossible = true;
+  } else if (
+    /status: (?:InvalidArgument|FailedPrecondition)|code: (?:InvalidArgument|FailedPrecondition)/i.test(
+      text,
+    )
+  ) {
+    reason =
+      'gateway rejected configuration; check OpenShell policy, provider profiles, template and resource requirements in gateway logs';
   } else if (/permission denied|operation not permitted/i.test(text)) {
     reason =
       'permission denied; check worker access to configHome, TLS files and policy files';
@@ -71,7 +107,8 @@ export function commandFailure(
       !result.timedOut &&
       result.signal === null &&
       result.exitCode !== null &&
-      allocationImpossible,
+      allocationImpossible &&
+      !allocationObserved,
   );
 }
 export type Runner = (

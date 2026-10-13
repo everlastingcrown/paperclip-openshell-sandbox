@@ -16,6 +16,7 @@ export interface Config {
   gateway: string;
   workspace: string;
   image: string;
+  template?: string;
   policy?: string;
   policyFile?: string;
   providers: string[];
@@ -67,6 +68,15 @@ export function parseRuntimeConfig(raw: Record<string, unknown>): Config {
   const configHome = optional('configHome');
   const policy = optional('policy');
   const policyFile = optional('policyFile');
+  const template = optional('template');
+  if (template && !isScopeName(template))
+    throw new Error('Invalid template name');
+  if (template && (raw.image !== undefined || cpu || memory))
+    throw new Error(
+      'Use template or image/cpu/memory; configure template resources in OpenShell',
+    );
+  if (policyFile && !policyFile.startsWith('/'))
+    throw new Error('Invalid policyFile (expected absolute worker-local path)');
   if (policy && policyFile)
     throw new Error('Supply only one of policy or policyFile');
   if (configHome && !configHome.startsWith('/'))
@@ -86,7 +96,8 @@ export function parseRuntimeConfig(raw: Record<string, unknown>): Config {
     configHome,
     gateway,
     workspace,
-    image: str('image'),
+    image: template ? '' : str('image'),
+    ...(template ? { template } : {}),
     policy,
     policyFile,
     providers,
@@ -99,13 +110,20 @@ export function parseRuntimeConfig(raw: Record<string, unknown>): Config {
 export const runtimeConfigSchema = {
   type: 'object',
   additionalProperties: false,
-  required: ['gateway', 'image'],
+  required: ['gateway'],
+  oneOf: [{ required: ['image'] }, { required: ['template'] }],
   properties: {
     executable: { type: 'string', default: 'openshell' },
     configHome: { type: 'string' },
     gateway: { type: 'string', minLength: 1 },
     workspace: { type: 'string', default: 'default' },
     image: { type: 'string', minLength: 1 },
+    template: {
+      type: 'string',
+      minLength: 1,
+      description:
+        'Existing OpenShell sandbox template; replaces image, cpu and memory',
+    },
     policy: {
       type: 'string',
       description:
