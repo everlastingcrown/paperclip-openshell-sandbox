@@ -5,14 +5,14 @@
 This ESM TypeScript package registers Paperclip's `openshell` sandbox driver. It targets Paperclip/plugin-sdk **2026.1005.0**, OpenShell CLI **0.1.2**, and Node **>=24.11.0**. The worker invokes an installed CLI; operators supply runtime images and authenticated credential providers.
 
 - `src/plugin.ts`: SDK hooks; `src/worker.ts`: worker startup; `src/index.ts`: public exports.
-- `src/provider.ts`: SDK-facing orchestration, lease reuse, stop/destroy/reconciliation, workspace realization, and execution.
-- `src/acquisition.ts`: preflight, explicit creation outcomes, admission checks, and bounded allocation cleanup.
-- `src/identity.ts`: sandbox response parsing, ownership labels, validated lease/recovery identities, and lease serialization.
-- `src/sandbox-client.ts`: scoped commands, complete paginated lookup, state polling, and execution validation/flags.
-- `src/policy.ts`: private temporary policy files and preservation of primary/cleanup failures; `src/deadline.ts`: operation budgets and injectable clock.
-- `src/recovery.ts`: operator cleanup configuration/schema; `src/validation.ts`: shared attempt UUID and scope-name validation.
+- `src/provider.ts`: SDK orchestration, reuse, stop/destroy/reconciliation, workspace realization, and execution.
+- `src/acquisition.ts`: creation outcomes, runtime admission, and cleanup evidence.
+- `src/identity.ts`: response parsing, ownership, and persisted lease/recovery identities.
+- `src/sandbox-client.ts`: scoped commands, paginated lookup, polling, shared cleanup retries, and execution.
+- `src/config.ts`: direct configuration/schema; no profiles, defaults or policy generation.
+- `src/recovery.ts`: optional operator cleanup recovery; `src/logging.ts`: non-throwing diagnostics; `src/deadline.ts`: budgets and injectable clock.
 - `src/cli.ts`: scoped CLI arguments, subprocess deadlines, I/O limits, JSON parsing, and sanitized lifecycle errors.
-- `src/config.ts`: configuration parsing/schema and runtime prerequisites; `src/manifest.ts`: identity and advertised capabilities.
+- `src/manifest.ts`: identity and advertised capabilities.
 - `test/*.test.ts`: suites for configuration/policy, acquisition, CLI/processes, lease lifecycle, recovery, and hardening regressions. `test/helpers.ts` supplies a typed fake CLI that dispatches by the scoped operation; `test/contract.test.ts` checks the manifest schema and real SDK worker RPC contract.
 - `scripts/`: build, packed-consumer validation, release preparation, and opt-in live smoke test.
 - `.github/workflows/`: PR validation and semantic-release; `README.md`: detailed operator configuration and troubleshooting.
@@ -41,8 +41,8 @@ Use a dedicated branch and PR for changes; include behavior changes and validati
 ## Key gotchas
 
 - Keep gateway/workspace scope explicit. Workers have minimal environments: custom gateway registration needs `configHome`, the parent of the `openshell` config directory. CLI subprocesses remove `OPENSHELL_GATEWAY_ENDPOINT`.
-- Creation outcome is tracked independently of errors. Only the create invocation can establish definitive rejection; readiness/runtime failures after creation must clean up or return structured reconciliation evidence. Capture verified IDs before temporary policy cleanup; preserve both create and file-removal diagnostics.
-- Reject exhausted deadlines before any runner call. Keep the acquisition cleanup reserve. Tests can inject the internal client clock and policy filesystem without changing the public provider constructor.
+- Creation outcome is tracked independently of errors. Only the create invocation can establish definitive rejection; readiness/runtime failures after creation must clean up or return structured reconciliation evidence. Persist verified IDs and keep cleanup independent of current runtime configuration.
+- Reject exhausted deadlines before any runner call. Keep a fresh bounded cleanup budget after acquisition failure. Tests can inject the internal client clock without changing the public provider constructor.
 - Complete and validate every list page before returning a match or confirming absence. Duplicate matches, repeated tokens, malformed later pages, and pagination-limit exhaustion fail closed.
 - Verify allocation ID and ownership labels before control operations. Preserve structured creation-cleanup errors and reconciliation behavior; uncertain allocation absence must not silently count as successful cleanup.
 - Stop and `stop_and_retain` must confirm `Stopped` and preserve files, including ephemeral leases. Never substitute deletion for a failed stop. Provider-enforced lease expiry is unsupported and rejected before allocation.

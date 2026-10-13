@@ -1,4 +1,7 @@
+import type { PluginLogger } from '@paperclipai/plugin-sdk';
+import { log } from './logging.js';
 import {
+  OpenShellCommandError,
   lifecycle,
   invoke,
   json,
@@ -7,42 +10,99 @@ import {
   checkStdin,
   type Runner,
 } from './cli.js';
-import { validatePolicyFile } from './policy.js';
 import type { Config } from './config.js';
 import { sandbox, verify, type Sandbox, type Identity } from './identity.js';
 import { systemClock, type Clock } from './deadline.js';
 export class SandboxClient {
+  logger?: PluginLogger;
   constructor(
     private readonly runner: Runner,
     private readonly pollMs = 500,
     readonly clock: Clock = systemClock,
   ) {}
-  command(c: Config, args: string[], deadline: number) {
-    return lifecycle(c, args, deadline, this.runner, this.clock);
-  }
-  async preflight(c: Config, name: string, deadline: number) {
-    await validatePolicyFile(c);
-    if (await this.inspect(c, name, deadline))
-      throw new Error('Sandbox name already exists before allocation');
-    if (c.template) {
-      const value = object(
-        json(
-          await this.command(
-            c,
-            ['template', 'get', c.template, '--output', 'json'],
-            deadline,
-          ),
-        ),
+  async command(c: Config, args: string[], deadline: number) {
+    const started = this.clock.now();
+    const fields = {
+      operation: args[0],
+      gateway: c.gateway,
+      workspace: c.workspace,
+    };
+    log(this.logger, 'debug', 'OpenShell command started', fields);
+    try {
+      const result = await lifecycle(
+        c,
+        args,
+        deadline,
+        this.runner,
+        this.clock,
       );
-      if (
-        value.name !== c.template ||
-        value.workspace !== c.workspace ||
-        typeof value.id !== 'string' ||
-        !value.id.trim()
-      )
-        throw new Error('Invalid sandbox template JSON identity');
+      log(this.logger, 'debug', 'OpenShell command completed', {
+        ...fields,
+        durationMs: this.clock.now() - started,
+      });
+      return result;
+    } catch (error) {
+      log(this.logger, 'warn', 'OpenShell command failed', {
+        ...fields,
+        durationMs: this.clock.now() - started,
+        error: (error as Error).message,
+      });
+      throw error;
     }
   }
+  async remove(c: Config, i: Identity, deadline: number) {
+    let failure: unknown;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      log(this.logger, 'info', 'OpenShell cleanup attempt', {
+        attempt,
+        sandboxName: i.name,
+        sandboxId: i.id,
+        gateway: c.gateway,
+        workspace: c.workspace,
+      });
+      try {
+        const found = await this.inspect(c, i.name, deadline);
+        if (found) {
+          verify(found, i);
+          i.id = found.id;
+          await this.command(c, ['delete', i.name], deadline);
+          await this.wait(c, i, 'missing', deadline);
+        } else if (!i.id) {
+          throw new Error('Allocation outcome uncertain');
+        }
+        log(this.logger, 'info', 'OpenShell cleanup confirmed', {
+          sandboxName: i.name,
+          sandboxId: i.id,
+        });
+        return;
+      } catch (error) {
+        failure = error;
+        log(this.logger, 'warn', 'OpenShell cleanup attempt failed', {
+          attempt,
+          sandboxName: i.name,
+          error: (error as Error).message,
+        });
+        // Retry transport/process failures and uncertain visibility. Contract
+        // or ownership failures must not authorize a later destructive call.
+        if (
+          !(error instanceof OpenShellCommandError) &&
+          (error as Error).message !== 'Allocation outcome uncertain' &&
+          !(error as Error).message.includes('confirmation timed out')
+        )
+          throw error;
+        const budget = deadline - this.clock.now();
+        if (attempt === 3 || budget <= 1) break;
+        await this.clock.sleep(Math.min(500, Math.floor(budget / 2)));
+      }
+    }
+    throw failure;
+  }
+  async preflight(c: Config, name: string, deadline: number) {
+    if (await this.inspect(c, name, deadline))
+      throw new Error('Sandbox name already exists before allocation');
+    // OpenShell validates templates and policy files when creating the sandbox.
+  }
+
   async inspect(
     c: Config,
     name: string,
@@ -102,6 +162,12 @@ export class SandboxClient {
         if (state !== 'Ready') throw new Error('Sandbox missing');
       }
       if (s) verify(s, i);
+      log(this.logger, 'debug', 'OpenShell sandbox state', {
+        sandboxName: i.name,
+        sandboxId: s?.id,
+        phase: s?.phase ?? 'missing',
+        expected: state,
+      });
       if (s?.phase === state) return;
       if (
         state === 'Ready' &&
@@ -142,6 +208,11 @@ export class SandboxClient {
     for (const [key, value] of Object.entries(env)) {
       flags.push('--env', `${key}=${value}`);
     }
+    const started = this.clock.now();
+    log(this.logger, 'debug', 'OpenShell execution started', {
+      sandboxName: i.name,
+      timeoutMs,
+    });
     const result = await invoke(
       this.runner,
       c.executable,
@@ -151,6 +222,15 @@ export class SandboxClient {
       c.configHome ? { XDG_CONFIG_HOME: c.configHome } : {},
     );
     // The v0.1.2 CLI exposes remote timeout as exit 124, with no separate flag.
+    log(this.logger, 'debug', 'OpenShell execution completed', {
+      sandboxName: i.name,
+      exitCode: result.exitCode,
+      signal: result.signal,
+      timedOut: result.timedOut,
+      durationMs: this.clock.now() - started,
+      stdoutBytes: Buffer.byteLength(result.stdout),
+      stderrBytes: Buffer.byteLength(result.stderr),
+    });
     return { ...result, timedOut: result.timedOut || result.exitCode === 124 };
   }
 }

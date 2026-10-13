@@ -9,27 +9,7 @@ import { parseConfig } from '../src/config.js';
 import { OpenShellCommandError } from '../src/cli.js';
 import { identity, nameFor } from '../src/identity.js';
 import { SandboxClient } from '../src/sandbox-client.js';
-import type { PolicyFiles } from '../src/policy.js';
 import { base, fake, ok, release } from './helpers.js';
-
-const brokenRemoval: PolicyFiles = {
-  async mkdtemp() {
-    return '/tmp/fake-policy';
-  },
-  async writeFile() {},
-  async rm() {
-    throw new Error('private-filesystem-detail');
-  },
-};
-async function acquireWithPolicy(f: ReturnType<typeof fake>) {
-  return acquire(
-    f.params,
-    parseConfig(f.params.config, f.settings),
-    new SandboxClient(f.runner, 1),
-    undefined,
-    brokenRemoval,
-  );
-}
 
 for (const operation of ['list', 'exec']) {
   test(`allocation-impossible error during ${operation} after create still cleans up`, async () => {
@@ -66,64 +46,6 @@ test('persistent readiness failure returns observed identity for reconciliation'
     return true;
   });
 });
-
-for (const stderr of [
-  'connection refused private-token',
-  'name exceeds maximum length private-token',
-]) {
-  test(`create failure and policy removal failure preserve both diagnostics: ${stderr.split(' ')[0]}`, async () => {
-    const f = fake(
-      { policyPreset: 'test' },
-      { policies: { test: 'private-policy' } },
-    );
-    f.fail((args) =>
-      args[5] === 'create' ? { ...ok(), exitCode: 1, stderr } : undefined,
-    );
-    await assert.rejects(acquireWithPolicy(f), (error: unknown) => {
-      assert.ok(error instanceof Error);
-      assert.match(error.message, /Cannot remove temporary OpenShell policy/);
-      assert.match(
-        error.message,
-        stderr.startsWith('name')
-          ? /19-character limit/
-          : /gateway connection failed/,
-      );
-      assert.ok(!error.message.includes('private-'));
-      if (stderr.startsWith('name')) {
-        assert.match(error.message, /no allocation created/);
-        assert.equal(readEnvironmentCreationCleanupError(error), null);
-      } else assert.ok(readEnvironmentCreationCleanupError(error));
-      return true;
-    });
-  });
-}
-
-for (const failDelete of [false, true]) {
-  test(`policy removal after successful creation retains identity (cleanup failure=${failDelete})`, async () => {
-    const f = fake(
-      { policyPreset: 'test' },
-      { policies: { test: 'private-policy' } },
-    );
-    if (failDelete)
-      f.fail((args) =>
-        args[5] === 'delete' ? { ...ok(), exitCode: 1 } : undefined,
-      );
-    await assert.rejects(acquireWithPolicy(f), (error: unknown) => {
-      assert.ok(error instanceof Error);
-      assert.match(error.message, /Cannot remove temporary OpenShell policy/);
-      if (failDelete)
-        assert.equal(
-          readEnvironmentCreationCleanupError(error)?.observedProviderLeaseId,
-          'sandbox-id',
-        );
-      else assert.match(error.message, /owned allocation cleaned up/);
-      assert.ok(!error.message.includes('private-'));
-      return true;
-    });
-    assert.ok(f.calls.some((c) => c.args[5] === 'delete'));
-    assert.equal(!!f.record, failDelete);
-  });
-}
 
 test('lease identity rejects malformed attempt UUIDs even with matching names', async () => {
   const f = fake();
@@ -362,39 +284,6 @@ for (const interruption of [
       f.provider.acquire(f.params),
       PluginEnvironmentCreationCleanupError,
     );
-  });
-}
-
-for (const failure of ['mkdtemp', 'writeFile'] as const) {
-  test(`policy ${failure} failure never attempts allocation`, async () => {
-    const f = fake(
-      { policyPreset: 'test' },
-      { policies: { test: 'private-policy' } },
-    );
-    const files: PolicyFiles = {
-      ...brokenRemoval,
-      async rm() {},
-      [failure]: async () => {
-        throw new Error('private-filesystem-detail');
-      },
-    };
-    await assert.rejects(
-      acquire(
-        f.params,
-        parseConfig(f.params.config, f.settings),
-        new SandboxClient(f.runner, 1),
-        undefined,
-        files,
-      ),
-      (error: unknown) => {
-        assert.ok(error instanceof Error);
-        assert.match(error.message, /no allocation created/);
-        assert.ok(!error.message.includes('private-'));
-        assert.equal(readEnvironmentCreationCleanupError(error), null);
-        return true;
-      },
-    );
-    assert.ok(!f.calls.some((c) => c.args[5] === 'create'));
   });
 }
 

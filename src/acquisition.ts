@@ -1,3 +1,4 @@
+import { log } from './logging.js';
 import { randomUUID } from 'node:crypto';
 import {
   PluginEnvironmentCreationCleanupError,
@@ -6,12 +7,7 @@ import {
   type PluginEnvironmentLease,
   type PluginLogger,
 } from '@paperclipai/plugin-sdk';
-import {
-  remotePath,
-  runtimeTools,
-  validateRuntimeImage,
-  type Config,
-} from './config.js';
+import { remotePath, runtimeTools, type Config } from './config.js';
 import { json, commandFailure, OpenShellCommandError } from './cli.js';
 import {
   fingerprint,
@@ -22,7 +18,6 @@ import {
   lease,
   type Identity,
 } from './identity.js';
-import { withPolicyFile, type PolicyFiles } from './policy.js';
 import { SandboxClient } from './sandbox-client.js';
 import { remaining } from './deadline.js';
 export async function acquire(
@@ -30,9 +25,7 @@ export async function acquire(
   c: Config,
   client: SandboxClient,
   logger?: PluginLogger,
-  policyFiles?: PolicyFiles,
 ): Promise<PluginEnvironmentLease> {
-  validateRuntimeImage(c);
   if (p.requestedExpiresAt != null)
     throw new Error('OpenShell CLI cannot guarantee provider-enforced expiry');
   const attemptId = randomUUID();
@@ -49,8 +42,8 @@ export async function acquire(
   const deadline = client.clock.now() + c.timeoutMs;
   const setupDeadline =
     deadline - Math.min(30_000, Math.floor(c.timeoutMs / 10));
-  let outcome: 'not_attempted' | 'rejected' | 'uncertain' | 'observed' =
-    'not_attempted';
+  let outcome: 'not_attempted' | 'uncertain' | 'observed' = 'not_attempted';
+  let rejected = false;
   let phase = 'preflight';
   const cleanup = (): PluginEnvironmentCreationCleanup => ({
     providerLeaseId: i.name,
@@ -61,6 +54,15 @@ export async function acquire(
     attemptId,
     accountFingerprint: fingerprint(c),
     labels: i.labels,
+  });
+  log(logger, 'info', 'OpenShell acquisition started', {
+    sandboxName: i.name,
+    companyId: p.companyId,
+    environmentId: p.environmentId,
+    runId: p.runId,
+    attemptId,
+    gateway: c.gateway,
+    workspace: c.workspace,
   });
   try {
     // Fail gateway, worker config and response-contract errors before a
@@ -83,35 +85,25 @@ export async function acquire(
     for (const [key, value] of Object.entries(i.labels))
       args.push('--label', `${key}=${value}`);
     for (const provider of c.providers) args.push('--provider', provider);
-    if (c.cpu) args.push('--cpu', c.cpu);
-    if (c.memory) args.push('--memory', c.memory);
     // A detached login shell can exit at EOF. Use a persistent canonical
     // command so subsequent exec and retained leases stay available.
     args.push('--', '/bin/sh', '-c', 'while :; do sleep 3600; done');
-    await withPolicyFile(
-      c,
-      async (path) => {
-        if (path) args.splice(args.indexOf('--'), 0, '--policy', path);
-        remaining(setupDeadline, client.clock);
-        outcome = 'uncertain';
-        let response: string;
-        try {
-          response = await client.command(c, args, setupDeadline);
-        } catch (error) {
-          if (
-            error instanceof OpenShellCommandError &&
-            error.allocationImpossible
-          )
-            outcome = 'rejected';
-          throw error;
-        }
-        const created = sandbox(json(response));
-        verify(created, i);
-        i.id = created.id;
-        outcome = 'observed';
-      },
-      policyFiles,
-    );
+    if (c.policyFile)
+      args.splice(args.indexOf('--'), 0, '--policy', c.policyFile);
+    remaining(setupDeadline, client.clock);
+    outcome = 'uncertain';
+    let response: string;
+    try {
+      response = await client.command(c, args, setupDeadline);
+    } catch (error) {
+      if (error instanceof OpenShellCommandError && error.allocationImpossible)
+        rejected = true;
+      throw error;
+    }
+    const created = sandbox(json(response));
+    verify(created, i);
+    i.id = created.id;
+    outcome = 'observed';
     phase = 'readiness';
     await client.wait(c, i, 'Ready', setupDeadline);
     phase = 'workspace and runtime checks';
@@ -141,49 +133,47 @@ export async function acquire(
         `Runtime workspace/tool check failed for ${c.template ? `template ${c.template}` : `image ${c.image}`}: ${missing.length ? `missing ${missing.join(', ')}` : workspace ? `cannot write ${remotePath}; check image user and filesystem policy` : commandFailure(c, 'exec', setup).message}`,
       );
     }
+    log(logger, 'info', 'OpenShell acquisition ready', {
+      sandboxName: i.name,
+      sandboxId: i.id,
+      companyId: p.companyId,
+      environmentId: p.environmentId,
+      attemptId,
+    });
     return lease(i);
   } catch (error) {
     const reason = (error as Error).message;
-    logger?.error('OpenShell acquisition failed', {
+    log(logger, 'error', 'OpenShell acquisition failed', {
       phase,
       sandboxName: i.name,
       gateway: c.gateway,
       workspace: c.workspace,
       error: reason,
     });
-    if (outcome === 'not_attempted' || outcome === 'rejected')
+    if (outcome === 'not_attempted' || rejected)
       throw new Error(
         `OpenShell acquisition failed during ${phase}; no allocation created: ${reason}`,
         { cause: error },
       );
     let cleanupError: unknown;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const found = await client.inspect(c, i.name, deadline);
-        if (!found) {
-          if (!i.id)
-            throw new Error('Allocation outcome uncertain', { cause: error });
-        } else {
-          verify(found, i);
-          i.id = found.id;
-          await client.command(c, ['delete', i.name], deadline);
-          await client.wait(c, i, 'missing', deadline);
-        }
-        cleanupError = undefined;
-        break;
-      } catch (failure) {
-        cleanupError = failure;
-        const budget = deadline - client.clock.now();
-        if (attempt === 2 || budget <= 1) break;
-        await client.clock.sleep(Math.min(500, Math.floor(budget / 2)));
-      }
+    // A timed-out create must not consume the cleanup budget.
+    const cleanupDeadline = client.clock.now() + Math.min(c.timeoutMs, 30_000);
+    try {
+      await client.remove(c, i, cleanupDeadline);
+    } catch (failure) {
+      cleanupError = failure;
     }
     if (cleanupError) {
       const cleanupReason = (cleanupError as Error).message;
-      logger?.error('OpenShell allocation cleanup requires reconciliation', {
-        sandboxName: i.name,
-        error: cleanupReason,
-      });
+      log(
+        logger,
+        'error',
+        'OpenShell allocation cleanup requires reconciliation',
+        {
+          sandboxName: i.name,
+          error: cleanupReason,
+        },
+      );
       // The SDK explicitly forbids serializing provider exceptions here.
       throw new PluginEnvironmentCreationCleanupError(
         [],

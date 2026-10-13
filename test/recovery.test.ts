@@ -152,7 +152,7 @@ test('explicit rejected-attempt recovery requires successful absence and preserv
     f.provider.setCleanupRecovery(async () => [{ ...entry, ...mismatch }]);
     await assert.rejects(
       f.provider.destroy(p),
-      PluginEnvironmentCreationCleanupError,
+      /ownership mismatch|requires durable identity/,
     );
   }
   f.provider.setCleanupRecovery(async () => [entry]);

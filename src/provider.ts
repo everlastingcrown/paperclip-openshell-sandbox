@@ -1,3 +1,4 @@
+import { log } from './logging.js';
 import {
   PluginEnvironmentCreationCleanupError,
   type PluginEnvironmentAcquireLeaseParams as Acquire,
@@ -11,12 +12,7 @@ import {
   type PluginEnvironmentProbeResult,
   type PluginLogger,
 } from '@paperclipai/plugin-sdk';
-import {
-  parseConfig,
-  parseRuntimeConfig,
-  validateRuntimeImage,
-} from './config.js';
-import { resolvePreset } from './presets.js';
+import { parseConfig } from './config.js';
 import { run, checkStdin, type Runner } from './cli.js';
 import {
   identity,
@@ -46,6 +42,7 @@ export class OpenShellProvider {
   }
   setLogger(logger: PluginLogger) {
     this.logger = logger;
+    this.client.logger = logger;
   }
   constructor(runner: Runner = run, pollMs = 500) {
     this.client = new SandboxClient(runner, pollMs);
@@ -60,39 +57,53 @@ export class OpenShellProvider {
     config: Record<string, unknown>;
   }) {
     if (p.driverKey !== 'openshell') throw new Error('Unsupported driver key');
-    const settings = (await this.pluginConfig?.(p.companyId)) ?? {};
-    return parseConfig(p.config, settings);
+    return parseConfig(p.config);
   }
   private async cleanupConfig(p: Release) {
-    const settings = await this.pluginConfig?.(p.companyId);
     if (p.driverKey !== 'openshell') throw new Error('Unsupported driver key');
-    const entries = this.cleanupRecovery
-      ? await this.cleanupRecovery(p.companyId)
-      : parseCleanupRecovery(settings ?? {});
-    const scopeRecovery = entries.find(
-      (entry) => entry.environmentId === p.environmentId,
-    );
     const metadata = p.leaseMetadata?.openshell;
     const saved =
       metadata && typeof metadata === 'object' && !Array.isArray(metadata)
         ? (metadata as Record<string, unknown>)
         : {};
-    const resolved = resolvePreset(p.config, settings ?? {}, true);
-    // Runtime/policy edits cannot block teardown. Explicit scope still wins and
-    // ownership validation below rejects a changed gateway or workspace.
-    const c = parseRuntimeConfig({
-      gateway: scopeRecovery?.gateway ?? saved.gateway,
-      workspace:
-        saved.workspace ??
-        (resolved.gateway ? 'default' : scopeRecovery?.workspace),
-      executable: saved.executable,
-      configHome: saved.configHome,
-      ...resolved,
+    let entries: CleanupRecovery[] = [];
+    try {
+      entries = this.cleanupRecovery
+        ? await this.cleanupRecovery(p.companyId)
+        : parseCleanupRecovery((await this.pluginConfig?.(p.companyId)) ?? {});
+    } catch (error) {
+      if (!saved.gateway) throw error;
+      log(
+        this.logger,
+        'warn',
+        'OpenShell recovery settings unavailable; using saved lease connection',
+        {
+          companyId: p.companyId,
+          environmentId: p.environmentId,
+        },
+      );
+    }
+    const scopeRecovery = entries.find(
+      (entry) => entry.environmentId === p.environmentId,
+    );
+    // Persisted lease connection settings are independent of current runtime edits.
+    const c = parseConfig({
+      gateway: saved.gateway ?? p.config.gateway ?? scopeRecovery?.gateway,
+      workspace: saved.gateway
+        ? saved.workspace
+        : (p.config.workspace ?? scopeRecovery?.workspace),
+      executable: saved.gateway ? saved.executable : p.config.executable,
+      configHome: saved.gateway
+        ? saved.configHome
+        : (scopeRecovery?.configHome ?? p.config.configHome),
       image: 'cleanup',
-      template: undefined,
-      cpu: undefined,
-      memory: undefined,
-      providers: [],
+      timeoutMs:
+        typeof p.config.timeoutMs === 'number' &&
+        Number.isInteger(p.config.timeoutMs) &&
+        p.config.timeoutMs >= 1000
+          ? Math.min(p.config.timeoutMs, 30_000)
+          : 30_000,
+      reuseLease: p.config.reuseLease === true,
     });
     const recovery = entries?.find(
       (entry) =>
@@ -108,7 +119,6 @@ export class OpenShellProvider {
   ): Promise<PluginEnvironmentProbeResult> {
     try {
       const c = await this.config(p);
-      validateRuntimeImage(c);
       await this.client.preflight(
         c,
         '',
@@ -128,7 +138,9 @@ export class OpenShellProvider {
       };
     } catch (error) {
       const message = (error as Error).message;
-      this.logger?.warn('OpenShell draft probe failed', { error: message });
+      log(this.logger, 'warn', 'OpenShell draft probe failed', {
+        error: message,
+      });
       return {
         ok: false,
         summary: message,
@@ -238,8 +250,8 @@ export class OpenShellProvider {
         : cleanupIdentity(p, p.providerLeaseId, value, c);
     const i =
       failed?.identity ?? identity(p, p.providerLeaseId, p.leaseMetadata, c);
-    const s = await this.client.inspect(c, i.name, deadline);
     if (failed && !i.id) {
+      const s = await this.client.inspect(c, i.name, deadline);
       // Versions before this fix always sent 46-character names, rejected
       // before allocation by v0.1.2's 19-character validation. A successful
       // scoped list confirms absence; these attempts cannot appear later.
@@ -248,7 +260,7 @@ export class OpenShellProvider {
         (i.name === legacyName(failed.cleanup.attemptId) ||
           recovery?.rejectedAttemptIds.includes(failed.cleanup.attemptId))
       ) {
-        this.logger?.info('Reconciled rejected OpenShell allocation', {
+        log(this.logger, 'info', 'Reconciled rejected OpenShell allocation', {
           sandboxName: i.name,
           companyId: p.companyId,
           environmentId: p.environmentId,
@@ -266,11 +278,7 @@ export class OpenShellProvider {
         },
       );
     }
-    if (s) {
-      verify(s, i);
-      await this.client.command(c, ['delete', i.name], deadline);
-      await this.client.wait(c, i, 'missing', deadline);
-    }
+    await this.client.remove(c, i, deadline);
     return { providerLeaseId: p.providerLeaseId!, state: 'destroyed' };
   }
 }

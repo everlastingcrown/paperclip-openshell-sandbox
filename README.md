@@ -1,188 +1,90 @@
-# OpenShell environments for Paperclip
+# OpenShell sandbox provider for Paperclip
 
-Run Paperclip agents in an existing OpenShell installation. The plugin creates a sandbox, checks that it can run your workload, and handles workspace transfer, execution, stopping and cleanup.
+A small CLI bridge for Paperclip **2026.1005.0** and OpenShell **0.1.2**. It creates a sandbox, prepares a workspace, runs commands, and stops or deletes the sandbox. Paperclip handles workspace transfer using its tar/base64 fallback.
 
-Requires **Paperclip 2026.1005.0**, **OpenShell CLI 0.1.2**, and **Node ≥24.11.0** on the Paperclip worker host. Install `@everlastingcrown/paperclip-openshell-sandbox` through Paperclip's plugin management UI and enable its `environment.drivers.register` capability. The environment provider is `openshell`.
+Install the package in Paperclip and enable its `openshell` sandbox driver. The Paperclip worker needs Node >=24.11.0 and an installed `openshell` CLI. Register and authenticate the gateway in the worker's OpenShell configuration directory before testing.
 
-## 1. Give the Paperclip worker access to OpenShell
+Configure the workload directly in OpenShell using a named template. In the Paperclip environment, select provider `openshell` and supply:
 
-Install the CLI where the Paperclip plugin worker runs. In a container deployment, that means inside the Paperclip container, with access to its gateway registration, authentication files and any policy files. A CLI installed only on your laptop is insufficient.
-
-Run these commands as the worker's operating-system user, using the same configuration directory you will give the plugin:
-
-```sh
-openshell --version
-XDG_CONFIG_HOME=/paperclip/.config openshell gateway list --output json
-XDG_CONFIG_HOME=/paperclip/.config openshell --gateway homelab --workspace default sandbox list --output json
+```json
+{
+  "provider": "openshell",
+  "gateway": "my-gateway",
+  "template": "paperclip-runtime",
+  "configHome": "/absolute/path/to/.config"
+}
 ```
 
-Replace `homelab` with your registered gateway. The last command must succeed. Register/authenticate your gateway through OpenShell first if it does not. See [OpenShell's CLI guide](https://github.com/NVIDIA/OpenShell/blob/v0.1.2/skills/openshell-cli/SKILL.md).
+`configHome` is the parent of the `openshell` configuration directory (the CLI's `XDG_CONFIG_HOME`). Omit it when the worker already inherits the correct directory. The CLI subprocess uses the selected gateway and workspace explicitly; it removes `OPENSHELL_GATEWAY_ENDPOINT` to avoid overriding that selection.
 
-**`configHome` is the parent of the `openshell` directory.** For registrations under `/paperclip/.config/openshell/gateways`, use `/paperclip/.config`. Paperclip workers have a minimal environment; do not assume they inherit the server's `HOME` or `XDG_CONFIG_HOME`. Mount the required configuration and credential files and make them accessible to the worker user.
+Templates specify the workload image, resources, driver configuration and environment in OpenShell. OpenShell 0.1.2's CLI supplies sandbox policy and credential-provider bindings separately: use an authored policy file and names of providers already configured and authenticated in OpenShell. The plugin does not author policy or create credential providers.
 
-The plugin always passes an explicit gateway and workspace and removes `OPENSHELL_GATEWAY_ENDPOINT` from CLI subprocesses. Keep that gateway name bound to the same installation while leases or cleanup records exist.
-
-## 2. Configure the runtime in OpenShell
-
-Use a [sandbox template](https://github.com/NVIDIA/OpenShell/blob/v0.1.2/crates/openshell-cli/src/main.rs) to keep the image and resource settings in your OpenShell installation:
-
-```sh
-XDG_CONFIG_HOME=/paperclip/.config openshell --gateway homelab --workspace default sandbox template create paperclip \
-  --image registry.example.com/paperclip-runtime:tested --cpu 2 --memory 4Gi
-
-XDG_CONFIG_HOME=/paperclip/.config openshell --gateway homelab --workspace default sandbox template get paperclip --output json
+```json
+{
+  "provider": "openshell",
+  "gateway": "my-gateway",
+  "template": "paperclip-runtime",
+  "policyFile": "/absolute/worker/path/policy.yaml",
+  "providers": ["github"]
+}
 ```
 
-Replace the example image with your own tested image. It needs your agent CLI, language runtimes and these tools:
+For a simple workload without a template, replace `template` with `image`. Configure resource limits in an OpenShell template. The provider starts a persistent `/bin/sh` process and uses `/sandbox/paperclip-workspace`. Your image and policy must allow workspace writes and these tools:
 
 ```text
-sh bash node git tar base64 cat mkdir rm mv chmod find dd wc basename
-awk sed head tail touch cp ln sleep
+sh bash node git tar base64 cat mkdir rm mv chmod find dd wc basename awk sed head tail touch cp ln sleep
 ```
 
-The sandbox user and filesystem policy must allow creating and writing `/sandbox/paperclip-workspace`. The plugin checks these prerequisites during creation and starts a persistent shell sleep loop to keep the sandbox available. `curlimages/curl` cannot run a Paperclip workspace. An image with Node and the listed tools can test the provider, but running an agent also requires the CLI used by your Paperclip adapter.
+Use a runtime image containing your agent tooling. Acquisition checks the tools and workspace before returning a lease.
 
-Manage credential providers and their profiles in OpenShell. Create and authenticate provider instances before attaching their **instance names** in the plugin's `providers` array. OpenShell provider profiles define credential and endpoint behavior; they are separate from the optional Paperclip runtime profiles below. The plugin uses manual policy approval and disables automatic provider discovery.
+| Setting               | Default     | Purpose                                      |
+| --------------------- | ----------- | -------------------------------------------- |
+| `gateway`             | required    | Registered OpenShell gateway                 |
+| `template` or `image` | required    | Workload source; supply one                  |
+| `workspace`           | `default`   | OpenShell workspace                          |
+| `configHome`          | inherited   | Worker-local XDG configuration directory     |
+| `executable`          | `openshell` | CLI executable                               |
+| `policyFile`          | omitted     | Authored policy file on the worker           |
+| `providers`           | `[]`        | Existing credential-provider names           |
+| `timeoutMs`           | `300000`    | Acquisition/command budget, 1000–86400000 ms |
+| `reuseLease`          | `false`     | Keep ordinary released leases for resume     |
 
-Leave policy settings out of Paperclip to use OpenShell's gateway/default policy. If you already maintain a custom policy file, make it available inside the worker and use `defaults.policyFile` below. Policies must use the [OpenShell policy schema](https://docs.nvidia.com/openshell/v0.1.2/how-it-works/policies/schema) and permit the workspace, required binaries and outbound endpoints. A sandbox template controls workload settings; it does not replace policy or credential-provider configuration.
+Paperclip-owned and future configuration fields are accepted and preserved. Only fields the provider consumes are validated. OpenShell validates policy and template contents when creating the sandbox. Plugin instance settings are unnecessary for normal operation.
 
-## 3. Set shared plugin defaults once
+## Failure handling and logs
 
-In the OpenShell plugin's company settings, save:
+The draft probe checks gateway access without allocating anything. Paperclip's **Test Provider** creates a fresh sandbox with `reuseLease: false`, then releases it. This provider deletes test sandboxes, including those with Paperclip's `archiveOnRelease` flag.
 
-```json
-{
-  "defaults": {
-    "configHome": "/paperclip/.config",
-    "gateway": "homelab",
-    "workspace": "default",
-    "template": "paperclip"
-  }
-}
-```
+If acquisition fails after creation, cleanup gets a fresh budget of up to 30 seconds, separate from the failed command. Cleanup retries up to three times, verifies ownership before deletion, and confirms absence. Ordinary destruction uses the same routine and is idempotent for an already deleted sandbox. Stop and `stop_and_retain` confirm the stopped state and preserve files.
 
-If needed, add `"providers": ["your-existing-provider"]` and `"policyFile": "/paperclip/policies/paperclip.yaml"` inside `defaults`. Paths refer to files on the worker host/container. Policy files are checked for readability before allocation and parsed by OpenShell; their contents stay out of Paperclip lease metadata and logs.
+Cleanup of a saved lease uses its recorded gateway, workspace, executable and config directory. Changed images, removed templates, unreadable policy files, invalid runtime fields, or unavailable plugin configuration cannot block this path. Existing leases keep their ownership metadata format.
 
-If you do not use templates, replace `template` with `image` and optionally `cpu` and `memory`. Do not combine `template` with `image`, `cpu` or `memory` in the same settings object; change template resources in OpenShell.
+A gateway outage can prevent deletion. An interrupted create can also finish remotely after the CLI exits. In these cases the provider reports structured cleanup evidence; Paperclip records `pending_cleanup` and retries. It never reports a sandbox destroyed without confirmation. Once deletion is confirmed, Paperclip can expire the cleanup lease. The plugin cannot reset Paperclip database/UI state itself.
 
-## 4. Create and test your Paperclip environment
+Logs include operation start/completion/failure, company/environment/run and attempt IDs, sandbox identity, scope, command duration, observed state, cleanup retry count and confirmation. Command arguments, stdin, environment values, policy contents and raw CLI output are excluded. Execution logs include exit code, signal, timeout and output byte counts. Logger failures never interrupt resource cleanup.
 
-Select **OpenShell** as the environment's sandbox provider. With plugin defaults configured, its provider configuration can be empty:
+To debug, find the acquisition attempt/environment ID in the Paperclip plugin logs, then correlate the sandbox name with your OpenShell gateway logs. Check gateway registration, the worker's config directory, template/image, authored policy and existing credential providers. Retry Test Provider after fixing the cause.
 
-```json
-{}
-```
-
-Save the environment, run the draft **Test**, then **Test Provider**.
-
-- **Test** resolves settings and checks gateway/workspace access, template identity and policy-file readability without allocating a sandbox. It does not validate policy YAML or boot the image.
-- **Test Provider** creates a fresh sandbox, checks readiness, runtime tools and workspace writes, then uses Paperclip's test cleanup flow. Creation failures attempt bounded cleanup and report the failing phase.
-
-Select the tested environment for your Paperclip agent/workspace. Paperclip transfers workspace files using its tar/base64 fallback and executes commands inside the sandbox.
-
-Saving validates explicit fields; required inherited settings and reference existence are checked during Test and Test Provider. Configuration remains scoped to the invoking company.
-
-## Optional overrides and runtime profiles
-
-An environment can override shared defaults, for example:
-
-```json
-{
-  "template": "paperclip-large",
-  "providers": ["model-provider", "github-provider"]
-}
-```
-
-For several reusable configurations, add plugin `profiles`:
-
-```json
-{
-  "defaults": {
-    "configHome": "/paperclip/.config",
-    "gateway": "homelab",
-    "template": "paperclip"
-  },
-  "profiles": {
-    "large": { "template": "paperclip-large" },
-    "retained": { "reuseLease": true }
-  }
-}
-```
-
-Then use `{ "profile": "large" }` in the environment. Settings resolve in this order: plugin defaults, selected plugin profile, explicit environment overrides. Arrays replace inherited arrays; `false` overrides `true`. Selecting a template clears inherited image/resource settings; selecting an image clears an inherited template. Empty optional text inherits its previous value.
-
-| Setting               | Use                                                                           |
-| --------------------- | ----------------------------------------------------------------------------- |
-| `gateway`             | Registered OpenShell gateway; required after merging                          |
-| `workspace`           | OpenShell namespace; defaults to `default`                                    |
-| `template` or `image` | Existing sandbox template or tested runtime image; one required after merging |
-| `configHome`          | Absolute XDG config directory accessible to the worker                        |
-| `executable`          | CLI path or executable name; defaults to `openshell`                          |
-| `providers`           | Existing OpenShell credential-provider instance names; defaults to `[]`       |
-| `cpu`, `memory`       | Image-mode resource limits; e.g. `"2"`, `"4Gi"`                               |
-| `timeoutMs`           | Per-operation budget; defaults to 300000 ms, range 1000–86400000              |
-| `reuseLease`          | Retain sandboxes for reuse; defaults to `false`                               |
-| `profile`             | Environment-only reference to a plugin runtime profile                        |
-| `policyFile`          | Plugin defaults/profile only; absolute worker-local policy path               |
-| `policyPreset`        | Reference to optional plugin `policies` YAML map                              |
-
-Inline policy presets remain supported: put a complete YAML document in plugin `policies`, e.g. `{ "policies": { "development": "version: 1\n..." } }`, and select `policyPreset` in defaults, a profile or the environment. Replace the ellipsis with valid policy YAML. Use one of `policyFile` or `policyPreset` per settings object. A later selection replaces the inherited policy source. There is no explicit policy-disable override. Preset/profile names are case-sensitive, up to 64 ASCII letters, digits, underscores or hyphens, and start with a letter or digit.
-
-Existing direct environment runtime settings and plugin profiles continue to work. Move legacy environment `policy`/`policyFile` into plugin settings. Policy changes apply to new allocations; manage existing sandbox policies through OpenShell. Cleanup does not require a removed policy, image or template. Successful leases save their connection details so cleanup can continue after their profile/defaults are removed. Changing a lease's gateway/workspace still fails ownership checks. Older failed-create records without saved connection details may need a recovery entry.
-
-## When a test fails
-
-| Error                                         | Action                                                                                                                                                          |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Gateway not registered / `HOME` missing       | Check `configHome`, mounts and worker-user access; repeat the scoped list command from step 1                                                                   |
-| Authentication, TLS or connection failure     | Repair gateway login/certificates/network access in the worker's OpenShell installation                                                                         |
-| Template lookup failed                        | Check the template exists in the selected gateway/workspace                                                                                                     |
-| Policy file cannot be read                    | Use an absolute file path mounted into the worker container with readable permissions                                                                           |
-| Policy YAML rejected before allocation        | Fix the file/preset using the v0.1.2 schema and retry; no cleanup record is needed for recognized local rejections                                              |
-| Credential provider unavailable               | Create/authenticate the provider instance and import its OpenShell profile in the selected workspace                                                            |
-| Missing runtime tool / workspace not writable | Fix the image, user or filesystem policy and run Test Provider again                                                                                            |
-| Configuration rejected by gateway             | Inspect gateway logs for policy, provider-profile or workload requirements; the plugin does not forward arbitrary CLI output because it may contain credentials |
-| Ownership mismatch                            | Inspect sandbox ID and `paperclip-*` labels; restore the original scope and investigate name reuse or replacement                                               |
-
-Temporary cleanup failures are retried within the acquisition budget; 10%, capped at 30 seconds, is reserved for cleanup. Every control operation verifies allocation identity and ownership labels. Names are 19 characters (`pc-` plus a UUID hash); the full attempt UUID is retained in labels.
-
-### Recover an environment locked by pending cleanup
-
-Upgrade/reload the plugin first. Paperclip's saved `driver`, `pluginId`, `pluginKey`, `sandboxProviderPlugin`, `failedCreateCleanup` and `pendingCleanupAttemptId` fields no longer block runtime parsing or cleanup. They are bookkeeping, not settings you need to enter.
-
-If cleanup still cannot access its original gateway registration, add this to **plugin settings**, alongside defaults/profiles, while the environment is locked:
+For old pending cleanup records or a moved configuration directory, plugin instance configuration supports the recovery escape hatch:
 
 ```json
 {
   "cleanupRecovery": [
     {
-      "environmentId": "your-paperclip-environment-id",
-      "gateway": "homelab",
+      "environmentId": "paperclip-environment-id",
+      "gateway": "my-gateway",
       "workspace": "default",
-      "configHome": "/paperclip/.config"
+      "configHome": "/absolute/path/to/.config",
+      "rejectedAttemptIds": []
     }
   ]
 }
 ```
 
-Use the exact environment ID and original gateway/workspace. Recovery settings repair cleanup access without editing the locked environment. Wait for Paperclip's cleanup sweep to retry, then remove the recovery entry when cleanup succeeds.
+Only add an attempt UUID to `rejectedAttemptIds` after gateway/CLI evidence establishes that creation was rejected. A successful scoped absence check is still required. When a late allocation is discovered without a persisted sandbox ID, the provider returns its observed identity for Paperclip to persist before the next teardown attempt.
 
-If creation timed out, was interrupted, or returned an unrecognized failure without an allocation ID, absence from a list does not prove it was rejected. The plugin keeps the attempt pending rather than clearing a possible late allocation. If a matching sandbox appears, the next sweep returns its verified ID for Paperclip to persist; a subsequent sweep can delete that allocation.
+## Migration from the previous canary
 
-If gateway logs prove the original create was rejected and cannot complete later, add its full UUID to the recovery entry's `rejectedAttemptIds`. For the attempt in the reported logs, that field would be:
+Move plugin `defaults`/`profiles` into each environment's direct configuration. Replace `profile` with an OpenShell `template` or an explicit `image`. Move `cpu` and `memory` into that template. Write plugin `policies`/inline YAML to a worker-local authored file and set `policyFile` directly; `policyPreset` is removed. Old configuration layers are no longer resolved. Existing persisted leases remain stoppable and destroyable using their recorded connection settings.
 
-```json
-{ "rejectedAttemptIds": ["01c71f6f-4810-4a41-841d-e7bcf8a26e1b"] }
-```
-
-Add this field inside the matching recovery entry only after confirming rejection. The plugin still requires a successful, complete scoped list proving absence. The `pc-...` sandbox name is not the attempt UUID. Errors include the UUID when it is needed. Older `paperclip-<UUID>` names exceeded OpenShell's name limit and reconcile automatically after a successful absence check. No manual database deletion is required.
-
-If an upgrade still displays the previous version/schema, restart Paperclip, reinstall the intended package version, then refresh the UI. Releases use a version-specific manifest to avoid Paperclip's module cache retaining an old schema.
-
-## Runtime behavior and limits
-
-Ordinary release deletes ephemeral sandboxes and confirms absence. With `reuseLease: true`, release retains the sandbox and resume verifies it, starting it if stopped. Explicit destruction deletes it. Stop and `stop_and_retain` confirm `Stopped` and preserve files even for ephemeral leases; a failed stop never becomes deletion.
-
-Commands run without a local shell or TTY, with explicit arguments, cwd and environment and closed stdin. Input is limited to **4 MiB UTF-8** and combined output to **16 MiB**. Exec output is returned to its authorized caller; lifecycle logs use sanitized diagnostics. Exit 124 means timeout, but cannot distinguish a deliberate exit 124. A local execution timeout does not prove remote termination; confirmed stop/destroy receipts do. Provider-enforced lease expiry, native sync and persistent process sessions are unsupported.
-
-For source installation, test coverage, live verification and publishing, see [Development and releases](docs/development.md).
+See [development and verification](docs/development.md) and [verified upstream contracts](docs/upstream-contracts.md).
