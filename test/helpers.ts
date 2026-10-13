@@ -21,7 +21,10 @@ export const ok = (stdout = ''): CommandResult => ({
   signal: null,
   timedOut: false,
 });
-export function fake(extra: Record<string, unknown> = {}) {
+export function fake(
+  extra: Record<string, unknown> = {},
+  settings?: Record<string, unknown>,
+) {
   const calls: {
     args: string[];
     stdin?: string;
@@ -68,7 +71,9 @@ export function fake(extra: Record<string, unknown> = {}) {
     return ok();
   };
   const provider = new OpenShellProvider(runner, 1);
+  if (settings) provider.setPluginConfig(async () => settings);
   return {
+    settings: settings ?? {},
     provider,
     runner,
     calls,

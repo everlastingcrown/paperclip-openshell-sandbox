@@ -11,7 +11,12 @@ import {
   type PluginEnvironmentProbeResult,
   type PluginLogger,
 } from '@paperclipai/plugin-sdk';
-import { parseConfig, validateRuntimeImage } from './config.js';
+import {
+  parseConfig,
+  parseRuntimeConfig,
+  validateRuntimeImage,
+} from './config.js';
+import { resolvePreset } from './presets.js';
 import { run, checkStdin, type Runner } from './cli.js';
 import {
   identity,
@@ -20,11 +25,19 @@ import {
   legacyName,
   cleanupIdentity,
 } from './identity.js';
-import type { CleanupRecovery } from './recovery.js';
+import { parseCleanupRecovery, type CleanupRecovery } from './recovery.js';
 import { SandboxClient, validateExecution } from './sandbox-client.js';
 import { acquire } from './acquisition.js';
 export class OpenShellProvider {
   private logger?: PluginLogger;
+  private pluginConfig?: (
+    companyId: string,
+  ) => Promise<Record<string, unknown>>;
+  setPluginConfig(
+    resolve: (companyId: string) => Promise<Record<string, unknown>>,
+  ) {
+    this.pluginConfig = resolve;
+  }
   private cleanupRecovery?: (companyId: string) => Promise<CleanupRecovery[]>;
   setCleanupRecovery(
     resolve: (companyId: string) => Promise<CleanupRecovery[]>,
@@ -39,15 +52,30 @@ export class OpenShellProvider {
   }
   private readonly client: SandboxClient;
   async acquire(p: Acquire) {
-    return acquire(p, this.config(p), this.client, this.logger);
+    return acquire(p, await this.config(p), this.client, this.logger);
   }
-  private config(p: { driverKey: string; config: Record<string, unknown> }) {
+  private async config(
+    p: {
+      driverKey: string;
+      companyId: string;
+      config: Record<string, unknown>;
+    },
+    control = false,
+  ) {
     if (p.driverKey !== 'openshell') throw new Error('Unsupported driver key');
-    return parseConfig(p.config);
+    const settings = (await this.pluginConfig?.(p.companyId)) ?? {};
+    return control
+      ? parseRuntimeConfig(resolvePreset(p.config, settings, true))
+      : parseConfig(p.config, settings);
   }
   private async cleanupConfig(p: Release) {
-    const c = this.config(p);
-    const recovery = (await this.cleanupRecovery?.(p.companyId))?.find(
+    const settings = await this.pluginConfig?.(p.companyId);
+    if (p.driverKey !== 'openshell') throw new Error('Unsupported driver key');
+    const c = parseRuntimeConfig(resolvePreset(p.config, settings ?? {}, true));
+    const entries = this.cleanupRecovery
+      ? await this.cleanupRecovery(p.companyId)
+      : parseCleanupRecovery(settings ?? {});
+    const recovery = entries?.find(
       (entry) =>
         entry.environmentId === p.environmentId &&
         entry.gateway === c.gateway &&
@@ -60,7 +88,7 @@ export class OpenShellProvider {
     p: PluginEnvironmentProbeParams,
   ): Promise<PluginEnvironmentProbeResult> {
     try {
-      const c = this.config(p);
+      const c = await this.config(p);
       validateRuntimeImage(c);
       await this.client.inspect(
         c,
@@ -92,7 +120,7 @@ export class OpenShellProvider {
     }
   }
   async resume(p: Resume): Promise<PluginEnvironmentLease> {
-    const c = this.config(p);
+    const c = await this.config(p);
     const i = identity(p, p.providerLeaseId, p.leaseMetadata, c);
     if (!c.reuseLease || !i.reuseLease)
       return { providerLeaseId: null, metadata: { expired: true } };
@@ -106,7 +134,7 @@ export class OpenShellProvider {
     return lease(i);
   }
   async execute(p: Execute) {
-    const c = this.config(p);
+    const c = await this.config(p);
     checkStdin(p.stdin);
     const i = identity(p, p.lease.providerLeaseId, p.lease.metadata, c);
     validateExecution(
@@ -137,7 +165,7 @@ export class OpenShellProvider {
     );
   }
   async realize(p: Realize) {
-    const c = this.config(p);
+    const c = await this.config(p);
     const i = identity(p, p.lease.providerLeaseId, p.lease.metadata, c);
     const cwd = p.workspace.remotePath ?? i.remotePath;
     const result = await this.execute({
@@ -154,7 +182,7 @@ export class OpenShellProvider {
     p: Release,
   ): Promise<PluginEnvironmentTerminationReceipt | void> {
     if (p.resourceDisposition === 'stop_and_retain') return this.stop(p);
-    const c = this.config(p);
+    const c = await this.config(p, true);
     const i = identity(p, p.providerLeaseId, p.leaseMetadata, c);
     if (i.reuseLease && c.reuseLease) {
       if (p.cancelActiveWork) return this.stop(p);

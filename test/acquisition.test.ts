@@ -24,12 +24,15 @@ test('explicit config home reaches create, inspect, exec and delete subprocesses
     assert.deepEqual(call.env, { XDG_CONFIG_HOME: '/paperclip/.config' });
 });
 test('acquisition uses pinned scope, ownership and noninteractive create flags', async () => {
-  const f = fake({
-    providers: ['existing'],
-    policyFile: '/policy.yaml',
-    cpu: '500m',
-    memory: '1Gi',
-  });
+  const f = fake(
+    {
+      providers: ['existing'],
+      policyPreset: 'test',
+      cpu: '500m',
+      memory: '1Gi',
+    },
+    { policies: { test: 'version: 1' } },
+  );
   const l = await f.provider.acquire(f.params);
   const args = f.calls.find((call) => call.args.includes('create'))!.args;
   for (const flag of [
@@ -43,7 +46,6 @@ test('acquisition uses pinned scope, ownership and noninteractive create flags',
     '--provider',
     'existing',
     '--policy',
-    '/policy.yaml',
     '--cpu',
     '500m',
     '--memory',
@@ -165,6 +167,17 @@ test('failed runtime check cleans up allocation', async () => {
 });
 test('unconfirmed deletion and acquisition timeout stay structured or fail loudly', async () => {
   const f = fake();
+  // Advance polling deterministically; wall-clock scheduling can expire the
+  // deadline between the loop check and the CLI invocation.
+  let now = 0;
+  Object.assign((f.provider as any).client, {
+    clock: {
+      now: () => now,
+      async sleep(ms: number) {
+        now += ms;
+      },
+    },
+  });
   const l = await f.provider.acquire(f.params);
   f.fail((a) => (a.includes('delete') ? ok() : undefined));
   await assert.rejects(

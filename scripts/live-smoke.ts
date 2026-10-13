@@ -42,12 +42,11 @@ const { prepareSandboxManagedRuntime } = await import(
   ).href
 );
 const config = {
-  ...parseConfig(
-    JSON.parse(await readFile(process.env.OPENSHELL_SMOKE_CONFIG, 'utf8')),
-  ),
+  ...JSON.parse(await readFile(process.env.OPENSHELL_SMOKE_CONFIG, 'utf8')),
   reuseLease: true,
 };
-const version = await run(config.executable, ['--version'], 5000);
+const runtimeConfig = parseConfig(config);
+const version = await run(runtimeConfig.executable, ['--version'], 5000);
 assert.match(version.stdout, /openshell 0\.1\.2\b/);
 const provider = new OpenShellProvider();
 const base = {

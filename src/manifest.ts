@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from '@paperclipai/plugin-sdk';
 import { configSchema } from './config.js';
 import { version } from './version.js';
-import { recoveryConfigSchema } from './recovery.js';
+import { pluginConfigSchema } from './presets.js';
 export const pluginId = 'paperclip.openshell-sandbox-provider';
 const manifest: PaperclipPluginManifestV1 = {
   id: pluginId,
@@ -13,7 +13,7 @@ const manifest: PaperclipPluginManifestV1 = {
   categories: ['workspace'],
   capabilities: ['environment.drivers.register'],
   entrypoints: { worker: './dist/worker.js' },
-  instanceConfigSchema: recoveryConfigSchema,
+  instanceConfigSchema: pluginConfigSchema(),
   environmentDrivers: [
     {
       driverKey: 'openshell',

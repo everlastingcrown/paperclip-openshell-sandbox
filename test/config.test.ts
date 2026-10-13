@@ -47,22 +47,28 @@ test('cleared optional text fields are treated as unspecified', () => {
   for (const field of ['gateway', 'image'])
     assert.throws(() => parseConfig({ ...config, [field]: '' }));
 });
-test('inline policy preserves text and rejects ambiguous sources', () => {
+test('policy presets preserve text and direct inputs require migration', () => {
   const policy = '\nversion: 1\n# Unicode: café\n';
   assert.equal(
-    parseConfig({ ...config, policy, policyFile: '' }).policy,
+    parseConfig(
+      { ...config, policyPreset: 'test' },
+      {
+        policies: { test: policy },
+      },
+    ).policy,
     policy,
   );
-  assert.equal(
-    parseConfig({ ...config, policy: '', policyFile: '/policy.yaml' })
-      .policyFile,
-    '/policy.yaml',
-  );
-  assert.equal(configSchema.properties.policy.type, 'string');
+  for (const raw of [{ policy }, { policyFile: '/policy.yaml' }])
+    assert.throws(() => parseConfig({ ...config, ...raw }), /Move policy/);
+  assert.equal('policy' in configSchema.properties, false);
+  assert.equal('policyFile' in configSchema.properties, false);
 });
 test('inline policies use private, distinct files removed after creation', async () => {
   const policy = '\nversion: 1\n# Unicode: café\n';
-  const fixtures = [fake({ policy }), fake({ policy })];
+  const fixtures = [
+    fake({ policyPreset: 'test' }, { policies: { test: policy } }),
+    fake({ policyPreset: 'test' }, { policies: { test: policy } }),
+  ];
   const paths: string[] = [];
   for (const f of fixtures)
     f.fail(async (args) => {
@@ -87,7 +93,10 @@ test('inline policies use private, distinct files removed after creation', async
 });
 test('inline policy files are removed when creation fails', async () => {
   for (const throws of [false, true]) {
-    const f = fake({ policy: 'version: 1\n# private-policy-value\n' });
+    const f = fake(
+      { policyPreset: 'test' },
+      { policies: { test: 'version: 1\n# private-policy-value\n' } },
+    );
     let path = '';
     f.fail((args) => {
       if (!args.includes('create')) return;
