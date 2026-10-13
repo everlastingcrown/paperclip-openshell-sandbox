@@ -92,11 +92,7 @@ export function parsePluginConfig(
   return { policies, profiles };
 }
 
-export function resolvePreset(
-  raw: Record<string, unknown>,
-  pluginConfig: Record<string, unknown>,
-  control = false,
-): Record<string, unknown> {
+function environmentInput(raw: Record<string, unknown>, control = false) {
   const { policy, policyFile, ...environment } = raw;
   if (
     !control &&
@@ -115,6 +111,32 @@ export function resolvePreset(
   )
     throw new Error('Unknown environment configuration field');
   const profileName = reference(environment.profile, 'profile');
+  return { environment, profileName };
+}
+
+// Save validation has no company context in the pinned SDK. Validate explicit
+// fields here; resolve references only in company-scoped provider operations.
+export function validateEnvironmentConfig(raw: Record<string, unknown>) {
+  const { environment, profileName } = environmentInput(raw);
+  reference(environment.policyPreset, 'policyPreset');
+  const runtime = Object.fromEntries(
+    Object.entries(explicit(environment)).filter(([key]) =>
+      runtimeKeys.includes(key),
+    ),
+  );
+  return parseRuntimeConfig({
+    // A profile may supply required fields; explicit overrides still validate.
+    ...(profileName ? { gateway: 'validation', image: 'validation' } : {}),
+    ...runtime,
+  });
+}
+
+export function resolvePreset(
+  raw: Record<string, unknown>,
+  pluginConfig: Record<string, unknown>,
+  control = false,
+): Record<string, unknown> {
+  const { environment, profileName } = environmentInput(raw, control);
   // Control operations must remain available after a policy is removed or changed.
   const settings = control
     ? {

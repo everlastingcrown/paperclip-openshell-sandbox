@@ -100,6 +100,8 @@ An environment can select a profile and override individual settings:
 
 Profiles may contain any runtime setting in the table and `policyPreset`, but cannot reference another profile or contain `policy`/`policyFile`. They may be partial: `gateway` and `image` must exist after merging with environment settings. Explicit environment settings override profile values, then ordinary defaults apply. Arrays replace rather than concatenate; `false` overrides `true`. Empty optional text is omitted and inherits the profile value. An omitted `policyPreset` inherits the profile's policy; select another named policy to override it. There is no explicit policy-disable override.
 
+Saving validates reference names and explicit runtime fields without reading company configuration: Paperclip/plugin-sdk 2026.1005.0 does not provide a company ID to the environment validation hook. Reference existence, inherited settings and inherited image suitability are checked by company-scoped probing and runtime operations. Use Test Provider to verify the resolved configuration before running agents.
+
 Saved environment configuration keeps references rather than copying inherited settings or YAML. The worker resolves current company configuration on each operation. Unknown references fail before allocation. Policy edits apply to future allocations; existing sandboxes retain their applied policy. The worker writes exact YAML to a private temporary file for creation and removes it on success or failure. Policy contents are excluded from lease metadata and lifecycle diagnostics.
 
 ### Migration from direct environment policies

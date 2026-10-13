@@ -142,7 +142,7 @@ test('unknown references and legacy policies fail before CLI calls', async () =>
   );
 });
 
-test('validation loads invocation settings and persists only explicit references', async () => {
+test('save validation needs no company settings and persists only explicit references', async () => {
   const f = fake();
   const plugin = createPlugin(f.provider);
   const companies: (string | undefined)[] = [];
@@ -151,6 +151,7 @@ test('validation loads invocation settings and persists only explicit references
     config: {
       async get(companyId?: string) {
         companies.push(companyId);
+        if (!companyId) throw new Error('company context is required');
         return settings;
       },
     },
@@ -162,17 +163,88 @@ test('validation loads invocation settings and persists only explicit references
   });
   assert.equal(result.ok, true);
   assert.deepEqual(result.normalizedConfig, raw);
-  assert.deepEqual(companies, [undefined]);
+  assert.deepEqual(companies, []);
   assert.equal(JSON.stringify(result).includes(policy), false);
   assert.equal(
     (await plugin.definition.onEnvironmentProbe!({ ...f.params, config: raw }))
       .ok,
     true,
   );
-  assert.deepEqual(companies, [undefined, 'company']);
+  assert.deepEqual(companies, ['company']);
   assert.equal(configSchema.required.length, 0);
   assert.equal('default' in configSchema.properties.reuseLease, false);
   assert.ok(manifest.instanceConfigSchema?.properties);
+});
+
+test('save validation checks fields and defers reference lookup to scoped operations', async () => {
+  const f = fake();
+  const plugin = createPlugin(f.provider);
+  const companies: string[] = [];
+  await plugin.definition.setup({
+    logger: { info() {}, warn() {}, error() {}, debug() {} },
+    config: {
+      async get(companyId?: string) {
+        assert.ok(companyId, 'company context is required');
+        companies.push(companyId);
+        return {};
+      },
+    },
+  } as any);
+  for (const raw of [
+    config,
+    { profile: 'missing' },
+    { ...config, policyPreset: 'missing' },
+    { profile: 'missing', policyPreset: 'missing', reuseLease: false },
+  ]) {
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: 'openshell',
+      config: raw,
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.normalizedConfig, raw);
+  }
+  for (const raw of [
+    {},
+    { policyPreset: 'development' },
+    { profile: '../invalid' },
+    { ...config, policyPreset: 42 },
+    { profile: 'standard', memory: 'bad' },
+    { profile: 'standard', timeoutMs: 0 },
+    { profile: 'standard', gateway: 'bad gateway' },
+    { profile: 'standard', image: 'curlimages/curl' },
+    { profile: 'standard', providers: [42] },
+    { profile: 'standard', unknown: true },
+    { ...config, policy },
+    { ...config, policyFile: '/private/policy.yaml' },
+  ]) {
+    assert.equal(
+      (
+        await plugin.definition.onEnvironmentValidateConfig!({
+          driverKey: 'openshell',
+          config: raw,
+        })
+      ).ok,
+      false,
+      JSON.stringify(raw),
+    );
+  }
+  assert.deepEqual(companies, []);
+  for (const raw of [
+    { profile: 'missing' },
+    { ...config, policyPreset: 'missing' },
+  ]) {
+    const params = { ...f.params, config: raw };
+    assert.equal(
+      (await plugin.definition.onEnvironmentProbe!(params)).ok,
+      false,
+    );
+    await assert.rejects(
+      plugin.definition.onEnvironmentAcquireLease!(params),
+      /Unknown (profile|policyPreset)/,
+    );
+  }
+  assert.deepEqual(companies, ['company', 'company', 'company', 'company']);
+  assert.equal(f.calls.length, 0);
 });
 
 test('company settings and policy edits are resolved on each allocation', async () => {
