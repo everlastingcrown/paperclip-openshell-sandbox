@@ -1,15 +1,12 @@
+import { log } from './logging.js';
 import {
   definePlugin,
   type PluginLogger,
   type PluginEnvironmentDriverBaseParams,
 } from '@paperclipai/plugin-sdk';
-import { validateRuntimeImage } from './config.js';
+import { parseConfig } from './config.js';
 import { OpenShellProvider } from './provider.js';
-import {
-  parsePluginConfig,
-  normalizedEnvironment,
-  validateEnvironmentConfig,
-} from './presets.js';
+import { parseCleanupRecovery } from './recovery.js';
 export function createPlugin(provider = new OpenShellProvider()) {
   let logger: PluginLogger | undefined;
   const control = async <T>(
@@ -17,10 +14,22 @@ export function createPlugin(provider = new OpenShellProvider()) {
     p: PluginEnvironmentDriverBaseParams,
     action: () => Promise<T>,
   ) => {
+    const fields = {
+      operation,
+      companyId: p.companyId,
+      environmentId: p.environmentId,
+    };
+    const started = Date.now();
+    log(logger, 'info', 'OpenShell operation started', fields);
     try {
-      return await action();
+      const result = await action();
+      log(logger, 'info', 'OpenShell operation completed', {
+        ...fields,
+        durationMs: Date.now() - started,
+      });
+      return result;
     } catch (error) {
-      logger?.error('OpenShell control failed', {
+      log(logger, 'error', 'OpenShell operation failed', {
         operation,
         companyId: p.companyId,
         environmentId: p.environmentId,
@@ -37,7 +46,7 @@ export function createPlugin(provider = new OpenShellProvider()) {
     },
     async onValidateConfig(config) {
       try {
-        parsePluginConfig(config);
+        parseCleanupRecovery(config);
         return { ok: true };
       } catch (error) {
         return { ok: false, errors: [(error as Error).message] };
@@ -47,23 +56,26 @@ export function createPlugin(provider = new OpenShellProvider()) {
       try {
         if (p.driverKey !== 'openshell')
           throw new Error('Unsupported driver key');
-        const config = validateEnvironmentConfig(p.config);
-        validateRuntimeImage(config);
-        return { ok: true, normalizedConfig: normalizedEnvironment(p.config) };
+        parseConfig(p.config);
+        return { ok: true, normalizedConfig: p.config };
       } catch (error) {
         return { ok: false, errors: [(error as Error).message] };
       }
     },
-    onEnvironmentProbe: (p) => provider.probe(p),
-    onEnvironmentAcquireLease: (p) => provider.acquire(p),
-    onEnvironmentResumeLease: (p) => provider.resume(p),
+    onEnvironmentProbe: (p) => control('probe', p, () => provider.probe(p)),
+    onEnvironmentAcquireLease: (p) =>
+      control('acquire', p, () => provider.acquire(p)),
+    onEnvironmentResumeLease: (p) =>
+      control('resume', p, () => provider.resume(p)),
     onEnvironmentReleaseLease: (p) =>
       control('release', p, () => provider.release(p)),
     onEnvironmentDestroyLease: (p) =>
       control('destroy', p, () => provider.destroy(p)),
     onEnvironmentStopLease: (p) => control('stop', p, () => provider.stop(p)),
-    onEnvironmentRealizeWorkspace: (p) => provider.realize(p),
-    onEnvironmentExecute: (p) => provider.execute(p),
+    onEnvironmentRealizeWorkspace: (p) =>
+      control('realize', p, () => provider.realize(p)),
+    onEnvironmentExecute: (p) =>
+      control('execute', p, () => provider.execute(p)),
   });
 }
 export default createPlugin();

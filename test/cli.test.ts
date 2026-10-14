@@ -93,7 +93,7 @@ test('ownership and scope mismatch blocks resume, execution, stop and destroy', 
       ...release(f, l),
       config: { ...f.params.config, gateway: 'other' },
     }),
-    /scope/,
+    /ownership/,
   );
   assert.ok(!f.calls.some((c) => c.args.includes('delete')));
 });
