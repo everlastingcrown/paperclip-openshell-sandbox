@@ -70,7 +70,20 @@ network_policies:
       - path: /home/node/.opencode/bin/opencode
       - path: /home/sandbox/.opencode/bin/opencode
       - path: /usr/local/bin/opencode
+      # Canonical executable in Paperclip's agent-runtime-opencode image.
+      - path: /usr/lib/node_modules/opencode-ai/bin/opencode.exe
     endpoints:
+      - host: models.opencode.ai
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      # OpenCode also contacts opencode.ai during startup.
+      - host: opencode.ai
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
       - host: models.dev
         port: 443
         protocol: rest
