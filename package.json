@@ -62,6 +62,7 @@
     "@paperclipai/plugin-sdk": "2026.1005.0",
     "@paperclipai/shared": "2026.1005.0",
     "@types/node": "24.10.1",
+    "conventional-changelog-conventionalcommits": "9.3.1",
     "eslint": "^10.12.0",
     "eslint-config-prettier": "10.1.8",
     "globals": "^17.13.0",
