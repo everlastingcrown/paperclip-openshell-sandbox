@@ -51,6 +51,36 @@ Use a runtime image containing your agent tooling. Acquisition checks the tools 
 
 Paperclip-owned and future configuration fields are accepted and preserved. Only fields the provider consumes are validated. OpenShell validates policy and template contents when creating the sandbox. Plugin instance settings are unnecessary for normal operation.
 
+## Image environment variables missing in tasks
+
+OpenShell 0.1.2 starts the sandbox's initial process with the image environment, but rebuilds the environment for subsequent `sandbox exec` commands. Dockerfile `ENV` values such as `JAVA_HOME`, `ANDROID_HOME`, and `PLAYWRIGHT_BROWSERS_PATH` are not automatically inherited by those commands. The exec environment includes selected defaults (including `PATH`), explicitly configured template environment variables, provider variables, and command overrides.
+
+This provider keeps an initial process running and launches Paperclip task commands through `sandbox exec --no-tty --no-login-shell`. Consequently, variables visible after an interactive `openshell sandbox create` can be absent from Paperclip tasks using the same image and policy. Removing `--no-login-shell` only enables shell startup files; it does not restore Dockerfile `ENV` inheritance.
+
+Declare required non-secret variables explicitly when creating the OpenShell template. For the Paperclip Expo image, for example, create a new template with the same image and resources:
+
+```sh
+openshell sandbox template create paperclip-expo-env \
+  --image '<same-image-reference>' \
+  --cpu 2 --memory 4Gi \
+  --env JAVA_HOME=/opt/java17 \
+  --env ANDROID_HOME=/opt/android-sdk \
+  --env ANDROID_SDK_ROOT=/opt/android-sdk \
+  --env PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers \
+  --env PLAYWRIGHT_SKIP_BROWSER_GC=1 \
+  --env NO_UPDATE_CHECK=1
+```
+
+Use the same gateway/workspace scope as the Paperclip environment, preserve any other template settings, then select the new template in Paperclip and start a fresh sandbox. Keep `policyFile` configured separately. Use credential providers for secrets.
+
+To check an existing sandbox through the same execution path, substitute its name and the configured gateway/workspace:
+
+```sh
+openshell --gateway my-gateway --workspace default sandbox exec \
+  --name '<sandbox-name>' --no-tty --no-login-shell -- \
+  /bin/sh -c 'printf "JAVA_HOME=%s\nANDROID_HOME=%s\nANDROID_SDK_ROOT=%s\nPLAYWRIGHT_BROWSERS_PATH=%s\n" "$JAVA_HOME" "$ANDROID_HOME" "$ANDROID_SDK_ROOT" "$PLAYWRIGHT_BROWSERS_PATH"'
+```
+
 ## Failure handling and logs
 
 The draft probe checks gateway access without allocating anything. Paperclip's **Test Provider** creates a fresh sandbox with `reuseLease: false`, then releases it. This provider deletes test sandboxes, including those with Paperclip's `archiveOnRelease` flag.
