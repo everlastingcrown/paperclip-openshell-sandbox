@@ -205,9 +205,32 @@ export class SandboxClient {
       '--timeout',
       String(Math.max(1, Math.ceil(timeoutMs / 1000))),
     ];
+    const setup: string[] = [];
     for (const [key, value] of Object.entries(env)) {
-      flags.push('--env', `${key}=${value}`);
+      if (/[\r\n]/.test(value)) {
+        // OpenShell 0.1.2 rejects CR/LF in exec environment overrides. Decode
+        // these values inside the workload instead. Keys are validated above;
+        // only base64 data enters shell source. The sentinel preserves trailing
+        // newlines that command substitution would otherwise strip.
+        const encoded = Buffer.from(value, 'utf8').toString('base64');
+        setup.push(
+          `${key}=$(printf '%s' '${encoded}' | base64 -d && printf '.') || exit "$?"`,
+          `export ${key}="\${${key}%.}"`,
+        );
+      } else {
+        flags.push('--env', `${key}=${value}`);
+      }
     }
+    const remoteCommand = setup.length
+      ? [
+          'sh',
+          '-c',
+          [...setup, 'exec "$@"'].join('; '),
+          'paperclip-env',
+          command,
+          ...args,
+        ]
+      : [command, ...args];
     const started = this.clock.now();
     log(this.logger, 'debug', 'OpenShell execution started', {
       sandboxName: i.name,
@@ -216,7 +239,7 @@ export class SandboxClient {
     const result = await invoke(
       this.runner,
       c.executable,
-      [...scope(c), 'sandbox', ...flags, '--', command, ...args],
+      [...scope(c), 'sandbox', ...flags, '--', ...remoteCommand],
       timeoutMs,
       stdin,
       c.configHome ? { XDG_CONFIG_HOME: c.configHome } : {},

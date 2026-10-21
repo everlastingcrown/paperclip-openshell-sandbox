@@ -61,6 +61,56 @@ test('execution reports local and remote timeout', async () => {
     );
   }
 });
+test('multiline environment bypasses OpenShell env validation without changing command I/O', async () => {
+  const f = fake();
+  const l = await f.provider.acquire(f.params);
+  const env = {
+    OPENCODE_CONFIG_CONTENT: '{\n  "provider": {}\n}\n\n',
+    CR: 'first\rsecond\r',
+    CRLF: 'first\r\nsecond\r\n',
+    QUOTED: '\n\'" $(exit 99); `exit 98` \\ café 🐈\n',
+    ONLY_NEWLINES: '\n\n',
+    SINGLE_LINE: 'unchanged',
+    EMPTY: '',
+  };
+  const args = ['two words', '; $(exit 97)', '', 'line\nbreak'];
+  f.fail(async (cliArgs) => {
+    if (!cliArgs.includes('exec')) return;
+    const delimiter = cliArgs.indexOf('--');
+    const overrides = cliArgs.slice(0, delimiter).flatMap((arg, index) => {
+      if (arg !== '--env') return [];
+      const value = cliArgs[index + 1];
+      assert.doesNotMatch(value, /[\r\n]/);
+      return [value];
+    });
+    assert.deepEqual(overrides, ['SINGLE_LINE=unchanged', 'EMPTY=']);
+    // Execute the actual transported argv, not a reimplementation of decoding.
+    return run(
+      'env',
+      [...overrides, ...cliArgs.slice(delimiter + 1)],
+      2000,
+      'input\n',
+    );
+  });
+  const result = await f.provider.execute({
+    ...f.params,
+    lease: l,
+    command: process.execPath,
+    args: [
+      '-e',
+      `let input='';process.stdin.setEncoding('utf8');process.stdin.on('data',s=>input+=s);process.stdin.on('end',()=>{process.stdout.write(JSON.stringify({env:Object.fromEntries(${JSON.stringify(Object.keys(env))}.map(k=>[k,process.env[k]])),args:process.argv.slice(1),input}));process.stderr.write('diagnostic');process.exitCode=7})`,
+      '--',
+      ...args,
+    ],
+    env,
+    stdin: 'input\n',
+  });
+  assert.deepEqual(JSON.parse(result.stdout), { env, args, input: 'input\n' });
+  assert.equal(result.stderr, 'diagnostic');
+  assert.equal(result.exitCode, 7);
+  assert.equal(result.timedOut, false);
+  assert.equal(f.calls.at(-1)!.stdin, 'input\n');
+});
 test('oversized stdin is rejected before invoking CLI', async () => {
   const f = fake();
   const l = await f.provider.acquire(f.params);

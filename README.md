@@ -51,6 +51,12 @@ Use a runtime image containing your agent tooling. Acquisition checks the tools 
 
 Paperclip-owned and future configuration fields are accepted and preserved. Only fields the provider consumes are validated. OpenShell validates policy and template contents when creating the sandbox. Plugin instance settings are unnecessary for normal operation.
 
+## Multiline task environment values
+
+OpenShell 0.1.2 rejects carriage returns and newlines in `sandbox exec --env` values. The provider transports multiline task values as base64 in a shell wrapper, restores them inside the sandbox, and replaces the wrapper with the requested command. This preserves trailing newlines, argument boundaries and stdin; ordinary values still use `--env`.
+
+With an older plugin, this can surface as `Failed to install the adapter runtime command` even when the image already contains the CLI: Paperclip's availability check and install attempt both receive the rejected environment. Update the plugin and reload its worker. No harness image change is needed for this transport error.
+
 ## Image environment variables missing in tasks
 
 OpenShell 0.1.2 starts the sandbox's initial process with the image environment, but rebuilds the environment for subsequent `sandbox exec` commands. Dockerfile `ENV` values such as `JAVA_HOME`, `ANDROID_HOME`, and `PLAYWRIGHT_BROWSERS_PATH` are not automatically inherited by those commands. The exec environment includes selected defaults (including `PATH`), explicitly configured template environment variables, provider variables, and command overrides.
