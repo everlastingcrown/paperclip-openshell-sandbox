@@ -89,6 +89,38 @@ openshell --gateway my-gateway --workspace default sandbox exec \
 
 ## Failure handling and logs
 
+### Long-running workloads
+
+Execution output now streams through the SDK while the command runs, while the
+final result still contains complete stdout/stderr. Set `streamRunLogs: false` in
+Paperclip's sandbox configuration to disable its additional file-tail poller.
+This removes recurring log-tail execs; it does not disable the callback bridge.
+Persistent sessions and duplex transport remain unsupported by this provider.
+
+Execution ownership checks use an OpenShell label selector for the lease's
+attempt instead of listing the entire workspace. All returned pages and ownership
+fields are still validated. Simultaneous checks of the same scoped allocation
+can share an in-flight lookup; completed results are never cached. Lifecycle and
+cleanup lookups remain independent and complete. Inspection and execution now
+share the caller's timeout, so a short bridge command cannot spend the full
+environment timeout inspecting before starting another execution timeout.
+
+Paperclip's queue callback bridge still polls, and each poll still needs an exec.
+Provider execution diagnostics use debug logging to avoid two info-level host
+log events per poll. Live gateway CPU and latency improvements require measurement
+on the deployed workload.
+
+Repeated `POST /runtime-tools/github/credentials` requests are separate from empty
+queue polling: Paperclip's managed GitHub launcher makes these requests when
+`git` or `gh` is invoked. If they recur every few hundred milliseconds, inspect
+the sandbox process tree for repeated Git invocations and nested managed launcher
+directories in `PATH`. Check the OpenShell exec rate and the Paperclip runtime
+version alongside these requests. The provider does not cache broker credentials
+or bypass per-operation identity checks. DNS/policy messages for every request
+can add further sandbox work; this change does not suppress security audit logs.
+
+### Cleanup and diagnostics
+
 The draft probe checks gateway access without allocating anything. Paperclip's **Test Provider** creates a fresh sandbox with `reuseLease: false`, then releases it. This provider deletes test sandboxes, including those with Paperclip's `archiveOnRelease` flag.
 
 If acquisition fails after creation, cleanup gets a fresh budget of up to 30 seconds, separate from the failed command. Cleanup retries up to three times, verifies ownership before deletion, and confirms absence. Ordinary destruction uses the same routine and is idempotent for an already deleted sandbox. Stop and `stop_and_retain` confirm the stopped state and preserve files.

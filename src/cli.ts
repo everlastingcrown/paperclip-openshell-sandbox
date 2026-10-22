@@ -1,5 +1,6 @@
 import { remaining, systemClock, type Clock } from './deadline.js';
 import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import type { Config } from './config.js';
 export const MAX_STDIN = 4 * 1024 * 1024;
 export const MAX_OUTPUT = 16 * 1024 * 1024;
@@ -117,6 +118,7 @@ export type Runner = (
   timeoutMs: number,
   stdin?: string,
   env?: { XDG_CONFIG_HOME?: string },
+  onOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void,
 ) => Promise<CommandResult>;
 export function checkStdin(stdin = '') {
   if (typeof stdin !== 'string') throw new Error('Invalid execution stdin');
@@ -124,7 +126,14 @@ export function checkStdin(stdin = '') {
     throw new Error('stdin exceeds OpenShell 4 MiB limit');
 }
 export function createRunner(spawnProcess: typeof spawn = spawn): Runner {
-  return async (executable, args, timeoutMs, stdin = '', overrides = {}) => {
+  return async (
+    executable,
+    args,
+    timeoutMs,
+    stdin = '',
+    overrides = {},
+    onOutput,
+  ) => {
     checkStdin(stdin);
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
       throw new Error('Operation deadline exceeded');
@@ -140,6 +149,18 @@ export function createRunner(spawnProcess: typeof spawn = spawn): Runner {
       });
       const out: Buffer[] = [];
       const err: Buffer[] = [];
+      const decoders = {
+        stdout: new StringDecoder('utf8'),
+        stderr: new StringDecoder('utf8'),
+      };
+      const emit = (stream: 'stdout' | 'stderr', chunk: string) => {
+        if (!chunk) return;
+        try {
+          onOutput?.(stream, chunk);
+        } catch {
+          /* logging cannot interrupt execution */
+        }
+      };
       let size = 0;
       let timedOut = false;
       let overflow = false;
@@ -164,16 +185,30 @@ export function createRunner(spawnProcess: typeof spawn = spawn): Runner {
         timedOut = true;
         terminate();
       }, timeoutMs);
-      const capture = (target: Buffer[], chunk: Buffer) => {
+      const capture = (
+        stream: 'stdout' | 'stderr',
+        target: Buffer[],
+        chunk: Buffer,
+      ) => {
         if (settled || overflow) return;
         size += chunk.length;
         if (size > MAX_OUTPUT) {
           overflow = true;
           terminate();
-        } else target.push(chunk);
+        } else {
+          target.push(chunk);
+          // Bound each notification, including when a custom stream supplies a
+          // large chunk. Separate decoders preserve split UTF-8 characters.
+          if (onOutput)
+            for (let offset = 0; offset < chunk.length; offset += 16384)
+              emit(
+                stream,
+                decoders[stream].write(chunk.subarray(offset, offset + 16384)),
+              );
+        }
       };
-      child.stdout.on('data', (chunk) => capture(out, chunk));
-      child.stderr.on('data', (chunk) => capture(err, chunk));
+      child.stdout.on('data', (chunk) => capture('stdout', out, chunk));
+      child.stderr.on('data', (chunk) => capture('stderr', err, chunk));
       const ioFailure = () => {
         ioFailed = true;
         terminate();
@@ -203,6 +238,10 @@ export function createRunner(spawnProcess: typeof spawn = spawn): Runner {
         );
       });
       child.once('close', (exitCode, signal) => {
+        if (!settled && onOutput) {
+          emit('stdout', decoders.stdout.end());
+          emit('stderr', decoders.stderr.end());
+        }
         if (overflow)
           finish(
             new OpenShellCommandError('OpenShell output exceeds 16 MiB limit'),

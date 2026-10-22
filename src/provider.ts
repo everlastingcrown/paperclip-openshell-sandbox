@@ -24,6 +24,7 @@ import {
 import { parseCleanupRecovery, type CleanupRecovery } from './recovery.js';
 import { SandboxClient, validateExecution } from './sandbox-client.js';
 import { acquire } from './acquisition.js';
+import { remaining } from './deadline.js';
 export class OpenShellProvider {
   private logger?: PluginLogger;
   private pluginConfig?: (
@@ -164,7 +165,8 @@ export class OpenShellProvider {
     await this.client.wait(c, i, 'Ready', deadline);
     return lease(i);
   }
-  async execute(p: Execute) {
+  async execute(p: Execute, onOutput?: Parameters<Runner>[5]) {
+    const started = this.client.clock.now();
     const c = await this.config(p);
     checkStdin(p.stdin);
     const i = identity(p, p.lease.providerLeaseId, p.lease.metadata, c);
@@ -176,14 +178,17 @@ export class OpenShellProvider {
       p.stdin,
       p.timeoutMs ?? c.timeoutMs,
     );
-    const s = await this.client.inspect(
-      c,
-      i.name,
-      this.client.clock.now() + c.timeoutMs,
-    );
+    const timeoutMs = p.timeoutMs ?? c.timeoutMs;
+    const deadline = started + timeoutMs;
+    const s = await this.client.inspectExecution(c, i, deadline);
     if (!s) throw new Error('Sandbox missing');
     verify(s, i);
     if (s.phase !== 'Ready') throw new Error('Sandbox is not ready');
+    log(this.logger, 'debug', 'OpenShell execution ownership verified', {
+      sandboxName: i.name,
+      inspectionMs: this.client.clock.now() - started,
+      remainingMs: Math.max(0, deadline - this.client.clock.now()),
+    });
     return this.client.exec(
       c,
       i,
@@ -192,7 +197,8 @@ export class OpenShellProvider {
       p.cwd ?? i.remotePath,
       p.env ?? {},
       p.stdin,
-      p.timeoutMs ?? c.timeoutMs,
+      remaining(deadline, this.client.clock),
+      onOutput,
     );
   }
   async realize(p: Realize) {

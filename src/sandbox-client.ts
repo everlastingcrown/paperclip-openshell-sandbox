@@ -15,6 +15,10 @@ import { sandbox, verify, type Sandbox, type Identity } from './identity.js';
 import { systemClock, type Clock } from './deadline.js';
 export class SandboxClient {
   logger?: PluginLogger;
+  private readonly inspections = new Map<
+    string,
+    { deadline: number; result: Promise<Sandbox | null> }
+  >();
   constructor(
     private readonly runner: Runner,
     private readonly pollMs = 500,
@@ -107,6 +111,7 @@ export class SandboxClient {
     c: Config,
     name: string,
     deadline: number,
+    selector?: string,
   ): Promise<Sandbox | null> {
     let match: Sandbox | null = null;
     let token = '';
@@ -124,6 +129,7 @@ export class SandboxClient {
               '100',
               '--page-token',
               token,
+              ...(selector ? ['--selector', selector] : []),
             ],
             deadline,
           ),
@@ -148,6 +154,31 @@ export class SandboxClient {
       seen.add(token);
     }
     throw new Error('OpenShell pagination limit exceeded');
+  }
+  async inspectExecution(c: Config, i: Identity, deadline: number) {
+    const selector = `paperclip-attempt=${i.labels['paperclip-attempt']}`;
+    const key = JSON.stringify([
+      c.executable,
+      c.configHome ?? null,
+      c.gateway,
+      c.workspace,
+      i.name,
+      selector,
+    ]);
+    const pending = this.inspections.get(key);
+    // Reuse work only while it is in flight and within this caller's budget.
+    // Never retain a completed ownership check or share lifecycle inspections.
+    if (pending && pending.deadline <= deadline) return pending.result;
+    const entry = {
+      deadline,
+      result: this.inspect(c, i.name, deadline, selector),
+    };
+    this.inspections.set(key, entry);
+    try {
+      return await entry.result;
+    } finally {
+      if (this.inspections.get(key) === entry) this.inspections.delete(key);
+    }
   }
   async wait(
     c: Config,
@@ -192,6 +223,7 @@ export class SandboxClient {
     env: Record<string, string>,
     stdin: string | undefined,
     timeoutMs: number,
+    onOutput?: Parameters<Runner>[5],
   ) {
     validateExecution(command, args, cwd, env, stdin, timeoutMs);
     const flags = [
@@ -243,6 +275,7 @@ export class SandboxClient {
       timeoutMs,
       stdin,
       c.configHome ? { XDG_CONFIG_HOME: c.configHome } : {},
+      onOutput,
     );
     // The v0.1.2 CLI exposes remote timeout as exit 124, with no separate flag.
     log(this.logger, 'debug', 'OpenShell execution completed', {

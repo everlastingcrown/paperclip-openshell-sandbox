@@ -80,3 +80,57 @@ test('combined stdout and stderr overflow rejects rather than returning success'
   await assert.rejects(result, /16 MiB/);
   assert.deepEqual(f.signals, ['SIGTERM']);
 });
+
+test('streaming arrives before close, preserves split UTF-8 and isolates stderr', async () => {
+  const f = processFixture();
+  const chunks: { stream: string; text: string }[] = [];
+  const result = f.runner(
+    'openshell',
+    [],
+    1000,
+    undefined,
+    {},
+    (stream, text) => chunks.push({ stream, text }),
+  );
+  const bytes = Buffer.from('A😀Z');
+  f.child.stdout.write(bytes.subarray(0, 3));
+  assert.deepEqual(chunks, [{ stream: 'stdout', text: 'A' }]);
+  f.child.stderr.write('diagnostic');
+  f.child.stdout.write(bytes.subarray(3));
+  assert.equal(
+    chunks
+      .filter((c) => c.stream === 'stdout')
+      .map((c) => c.text)
+      .join(''),
+    'A😀Z',
+  );
+  f.child.emit('close', 0, null);
+  assert.deepEqual(await result, {
+    stdout: 'A😀Z',
+    stderr: 'diagnostic',
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+  });
+});
+
+test('streaming limits notifications and tolerates a broken log sink', async () => {
+  const f = processFixture();
+  let delivered = 0;
+  const result = f.runner(
+    'openshell',
+    [],
+    1000,
+    undefined,
+    {},
+    (_stream, text) => {
+      assert.ok(Buffer.byteLength(text) <= 16384);
+      delivered += Buffer.byteLength(text);
+      throw new Error('broken sink');
+    },
+  );
+  f.child.stdout.write(Buffer.alloc(65536, 'a'));
+  f.child.stdout.write(Buffer.alloc(MAX_OUTPUT));
+  await assert.rejects(result, /16 MiB/);
+  assert.equal(delivered, 65536);
+});

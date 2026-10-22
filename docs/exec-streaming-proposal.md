@@ -1,6 +1,10 @@
 # Proposal: reduce OpenShell exec traffic and adapter latency
 
-Status: proposed for future consideration; not implemented.
+Status: partially implemented. Native output forwarding, execution-scoped
+in-flight inspection sharing, label filtering, and a shared inspection/execution
+deadline are implemented. SSH duplex channels remain proposed; callback queue
+polling is still active. Set `streamRunLogs: false` to remove the extra log-tail
+poller when using the streaming provider.
 
 Analysis date: 2026-10-21. Scope: provider-only changes, retaining Paperclip SDK
 2026.1005.0 and OpenShell CLI 0.1.2.

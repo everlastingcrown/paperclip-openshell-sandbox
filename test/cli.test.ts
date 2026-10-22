@@ -40,7 +40,7 @@ test('execution preserves argument boundaries, cwd, env, stdin and outcomes', as
     'two words',
   ]);
   assert.equal(call.stdin, 'input');
-  assert.equal(call.timeout, 321);
+  assert.ok(call.timeout > 0 && call.timeout <= 321);
   assert.ok(call.args.includes('--no-login-shell'));
   assert.ok(call.args.includes('NAME=private-value'));
   assert.ok(call.args.includes('/custom'));

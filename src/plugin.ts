@@ -9,6 +9,7 @@ import { OpenShellProvider } from './provider.js';
 import { parseCleanupRecovery } from './recovery.js';
 export function createPlugin(provider = new OpenShellProvider()) {
   let logger: PluginLogger | undefined;
+  let onOutput: Parameters<OpenShellProvider['execute']>[1];
   const control = async <T>(
     operation: string,
     p: PluginEnvironmentDriverBaseParams,
@@ -41,6 +42,7 @@ export function createPlugin(provider = new OpenShellProvider()) {
   return definePlugin({
     async setup(ctx) {
       logger = ctx.logger;
+      onOutput = (stream, chunk) => ctx.execution.log(stream, chunk);
       provider.setPluginConfig((companyId) => ctx.config.get(companyId));
       provider.setLogger(ctx.logger);
     },
@@ -74,8 +76,7 @@ export function createPlugin(provider = new OpenShellProvider()) {
     onEnvironmentStopLease: (p) => control('stop', p, () => provider.stop(p)),
     onEnvironmentRealizeWorkspace: (p) =>
       control('realize', p, () => provider.realize(p)),
-    onEnvironmentExecute: (p) =>
-      control('execute', p, () => provider.execute(p)),
+    onEnvironmentExecute: (p) => provider.execute(p, onOutput),
   });
 }
 export default createPlugin();
