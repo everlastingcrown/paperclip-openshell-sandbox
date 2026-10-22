@@ -11,6 +11,50 @@ import { identity, nameFor } from '../src/identity.js';
 import { SandboxClient } from '../src/sandbox-client.js';
 import { base, fake, ok, release } from './helpers.js';
 
+for (const state of ['Ready', 'Stopped', 'missing'] as const) {
+  test(`${state} polling reports confirmation timeout when budget expires after loop guard`, async () => {
+    const f = fake();
+    const l = await f.provider.acquire(f.params);
+    const c = parseConfig(f.params.config);
+    const i = identity(f.params, l.providerLeaseId, l.metadata, c);
+    let reads = 0;
+    const client = new SandboxClient(f.runner, 1, {
+      now: () => (reads++ < 2 ? 0 : 1000),
+      sleep: async () => {
+        assert.fail('expired poll must not sleep');
+      },
+    });
+    const calls = f.calls.length;
+    await assert.rejects(
+      client.wait(c, i, state, 1000),
+      new RegExp(`Sandbox ${state} confirmation timed out`),
+    );
+    assert.equal(f.calls.length, calls);
+  });
+}
+
+test('polling preserves response validation errors even when the deadline expires', async () => {
+  const f = fake();
+  const l = await f.provider.acquire(f.params);
+  const c = parseConfig(f.params.config);
+  const i = identity(f.params, l.providerLeaseId, l.metadata, c);
+  let now = 0;
+  const client = new SandboxClient(f.runner, 1, {
+    now: () => now,
+    sleep: async () => {},
+  });
+  f.fail((args) => {
+    if (args.includes('list')) {
+      now = 1000;
+      return ok('invalid JSON');
+    }
+  });
+  await assert.rejects(
+    client.wait(c, i, 'Stopped', 1000),
+    /Malformed OpenShell JSON/,
+  );
+});
+
 for (const operation of ['list', 'exec']) {
   test(`allocation-impossible error during ${operation} after create still cleans up`, async () => {
     const f = fake();

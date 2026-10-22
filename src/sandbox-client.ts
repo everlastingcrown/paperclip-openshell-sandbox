@@ -12,7 +12,7 @@ import {
 } from './cli.js';
 import type { Config } from './config.js';
 import { sandbox, verify, type Sandbox, type Identity } from './identity.js';
-import { systemClock, type Clock } from './deadline.js';
+import { OperationDeadlineError, systemClock, type Clock } from './deadline.js';
 export class SandboxClient {
   logger?: PluginLogger;
   private readonly inspections = new Map<
@@ -187,7 +187,20 @@ export class SandboxClient {
     deadline: number,
   ) {
     while (this.clock.now() < deadline) {
-      const s = await this.inspect(c, i.name, deadline);
+      let s: Sandbox | null;
+      try {
+        s = await this.inspect(c, i.name, deadline);
+      } catch (error) {
+        // The budget can expire after the loop guard, including between list
+        // pages. Report the same confirmation timeout as expiry during sleep.
+        // Preserve transport, response-shape and ownership failures.
+        if (
+          error instanceof OperationDeadlineError &&
+          this.clock.now() >= deadline
+        )
+          break;
+        throw error;
+      }
       if (!s) {
         if (state === 'missing') return;
         if (state !== 'Ready') throw new Error('Sandbox missing');
