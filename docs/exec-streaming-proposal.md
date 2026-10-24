@@ -1,15 +1,15 @@
 # Proposal: reduce OpenShell exec traffic and adapter latency
 
-For the current duplex implementation plan, including the environment opt-in,
+For the implemented duplex transport design, including the environment opt-in,
 instance-setting API prerequisite, and provider-only implementation, see the
-[duplex handoff](duplex-implementation-handoff.md). That plan supersedes the
+[duplex handoff](duplex-implementation-handoff.md). That design supersedes the
 remaining duplex design below. It requires no Paperclip code changes. This document records
 the earlier proposal and the streaming work already completed.
 
 Status: partially implemented. Native output forwarding, execution-scoped
 in-flight inspection sharing, label filtering, and a shared inspection/execution
-deadline are implemented. SSH duplex channels remain proposed; callback queue
-polling is still active. Set `streamRunLogs: false` to remove the extra log-tail
+deadline are implemented. Opt-in SSH duplex channels are implemented; callback queue
+polling remains active when disabled or selected by startup fallback. Set `streamRunLogs: false` to remove the extra log-tail
 poller when using the streaming provider.
 
 Analysis date: 2026-10-21. Scope: provider-only changes, retaining Paperclip SDK

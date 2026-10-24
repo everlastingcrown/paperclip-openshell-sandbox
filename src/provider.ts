@@ -12,6 +12,14 @@ import {
   type PluginEnvironmentProbeResult,
   type PluginLogger,
 } from '@paperclipai/plugin-sdk';
+import {
+  DuplexChannels,
+  DuplexUnavailableError,
+  leaseKey,
+  type DuplexLauncher,
+} from './duplex.js';
+import type { Config } from './config.js';
+import type { Identity } from './identity.js';
 import { parseConfig } from './config.js';
 import { run, checkStdin, type Runner } from './cli.js';
 import {
@@ -26,6 +34,94 @@ import { SandboxClient, validateExecution } from './sandbox-client.js';
 import { acquire } from './acquisition.js';
 import { remaining } from './deadline.js';
 export class OpenShellProvider {
+  private leases = new Map<string, { c: Config; i: Identity }>();
+  private pending = new Set<{ scope: string; key?: string; valid: boolean }>();
+  private shuttingDown = false;
+  readonly duplex: DuplexChannels;
+  private scopeKey(p: {
+    companyId: string;
+    environmentId: string;
+    driverKey: string;
+  }) {
+    return JSON.stringify([p.companyId, p.environmentId, p.driverKey]);
+  }
+  private async validated<T>(
+    p: {
+      companyId: string;
+      environmentId: string;
+      driverKey: string;
+      config: Record<string, unknown>;
+    },
+    id: string | null | undefined,
+    action: () => Promise<T>,
+    resultLease: (result: T) => PluginEnvironmentLease,
+  ): Promise<T> {
+    const token = {
+      scope: this.scopeKey(p),
+      key: id ? leaseKey({ ...p, providerLeaseId: id }) : undefined,
+      valid: !this.shuttingDown,
+    };
+    if (this.pending.size >= 1024)
+      throw new Error('Lease validation capacity exceeded');
+    this.pending.add(token);
+    try {
+      const result = await action();
+      const l = resultLease(result);
+      if (!l.providerLeaseId) {
+        if (token.key) await this.forget(p, id!);
+      } else if (token.valid) {
+        const c = await this.config(p);
+        const i = identity(p, l.providerLeaseId, l.metadata, c);
+        const key = leaseKey({ ...p, providerLeaseId: l.providerLeaseId });
+        if (token.valid) {
+          this.leases.set(key, {
+            c: {
+              executable: c.executable,
+              sshExecutable: c.sshExecutable,
+              configHome: c.configHome,
+              gateway: c.gateway,
+              workspace: c.workspace,
+              timeoutMs: c.timeoutMs,
+              enableDuplex: c.enableDuplex,
+              reuseLease: c.reuseLease,
+              image: '',
+              providers: [],
+            },
+            i,
+          });
+          if (this.leases.size > 1024) {
+            const oldest = this.leases.keys().next().value!;
+            this.leases.delete(oldest);
+            await this.duplex.invalidate(oldest);
+          }
+        }
+      }
+      return result;
+    } catch (error) {
+      if (id) await this.forget(p, id);
+      throw error;
+    } finally {
+      this.pending.delete(token);
+    }
+  }
+  private async forget(
+    p: { companyId: string; environmentId: string; driverKey: string },
+    id: string | null,
+  ) {
+    if (!id) return;
+    const key = leaseKey({ ...p, providerLeaseId: id });
+    for (const token of this.pending)
+      if (token.key === key || (!token.key && token.scope === this.scopeKey(p)))
+        token.valid = false;
+    this.leases.delete(key);
+    await this.duplex.invalidate(key);
+  }
+  async shutdown() {
+    this.shuttingDown = true;
+    for (const token of this.pending) token.valid = false;
+    this.leases.clear();
+    await this.duplex.shutdown();
+  }
   private logger?: PluginLogger;
   private pluginConfig?: (
     companyId: string,
@@ -44,13 +140,59 @@ export class OpenShellProvider {
   setLogger(logger: PluginLogger) {
     this.logger = logger;
     this.client.logger = logger;
+    this.duplex.logger = logger;
   }
-  constructor(runner: Runner = run, pollMs = 500) {
+  constructor(runner: Runner = run, pollMs = 500, launcher?: DuplexLauncher) {
     this.client = new SandboxClient(runner, pollMs);
+    this.duplex = new DuplexChannels(async (p, signal) => {
+      const key = leaseKey(p);
+      const entry = this.leases.get(key);
+      log(this.logger, 'info', 'OpenShell duplex environment selection', {
+        companyId: p.companyId,
+        environmentId: p.environmentId,
+        enableDuplex: entry?.c.enableDuplex === true,
+      });
+      if (p.driverKey !== 'openshell' || !entry)
+        throw new DuplexUnavailableError(
+          'lease unknown in this worker; resume or execute with verified metadata first',
+        );
+      if (!entry.c.enableDuplex)
+        throw new DuplexUnavailableError(
+          'environment enableDuplex is off; file polling remains active',
+        );
+      const valid = () =>
+        !signal.aborted && !this.shuttingDown && this.leases.get(key) === entry;
+      try {
+        const sandbox = await this.client.inspect(
+          entry.c,
+          entry.i.name,
+          this.client.clock.now() + Math.min(entry.c.timeoutMs, 10_000),
+          undefined,
+          signal,
+        );
+        if (!valid()) throw new Error('Duplex lease invalidated');
+        if (!sandbox) throw new Error('Duplex sandbox unavailable');
+        verify(sandbox, entry.i);
+        if (!entry.i.id || sandbox.phase !== 'Ready')
+          throw new Error('Duplex sandbox is not ready');
+        return { ...entry, valid };
+      } catch {
+        if (this.leases.get(key) === entry)
+          await this.forget(p, p.providerLeaseId);
+        throw new DuplexUnavailableError(
+          'fresh scoped lease lookup, allocation identity or readiness verification failed',
+        );
+      }
+    }, launcher);
   }
   private readonly client: SandboxClient;
   async acquire(p: Acquire) {
-    return acquire(p, await this.config(p), this.client, this.logger);
+    return this.validated(
+      p,
+      undefined,
+      async () => acquire(p, await this.config(p), this.client, this.logger),
+      (result) => result,
+    );
   }
   private async config(p: {
     driverKey: string;
@@ -152,6 +294,14 @@ export class OpenShellProvider {
     }
   }
   async resume(p: Resume): Promise<PluginEnvironmentLease> {
+    return this.validated(
+      p,
+      p.providerLeaseId,
+      () => this.resumeValidated(p),
+      (result) => result,
+    );
+  }
+  private async resumeValidated(p: Resume): Promise<PluginEnvironmentLease> {
     const c = await this.config(p);
     const i = identity(p, p.providerLeaseId, p.leaseMetadata, c);
     if (!c.reuseLease || !i.reuseLease)
@@ -166,6 +316,14 @@ export class OpenShellProvider {
     return lease(i);
   }
   async execute(p: Execute, onOutput?: Parameters<Runner>[5]) {
+    return this.validated(
+      p,
+      p.lease.providerLeaseId,
+      () => this.executeValidated(p, onOutput),
+      () => p.lease,
+    );
+  }
+  private async executeValidated(p: Execute, onOutput?: Parameters<Runner>[5]) {
     const started = this.client.clock.now();
     const c = await this.config(p);
     checkStdin(p.stdin);
@@ -218,6 +376,7 @@ export class OpenShellProvider {
   async release(
     p: Release,
   ): Promise<PluginEnvironmentTerminationReceipt | void> {
+    await this.forget(p, p.providerLeaseId);
     if (p.resourceDisposition === 'stop_and_retain') return this.stop(p);
     const { c } = await this.cleanupConfig(p);
     const i = identity(p, p.providerLeaseId, p.leaseMetadata, c);
@@ -234,6 +393,7 @@ export class OpenShellProvider {
     return this.destroy(p);
   }
   async stop(p: Release): Promise<PluginEnvironmentTerminationReceipt> {
+    await this.forget(p, p.providerLeaseId);
     const { c } = await this.cleanupConfig(p);
     const i = identity(p, p.providerLeaseId, p.leaseMetadata, c);
     const deadline = this.client.clock.now() + c.timeoutMs;
@@ -246,6 +406,7 @@ export class OpenShellProvider {
     return { providerLeaseId: p.providerLeaseId!, state: 'stopped' };
   }
   async destroy(p: Release): Promise<PluginEnvironmentTerminationReceipt> {
+    await this.forget(p, p.providerLeaseId);
     if (p.resourceDisposition === 'stop_and_retain') return this.stop(p);
     const { c, recovery } = await this.cleanupConfig(p);
     const deadline = this.client.clock.now() + c.timeoutMs;

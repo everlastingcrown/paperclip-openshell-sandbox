@@ -7,6 +7,8 @@ import { config } from './helpers.js';
 test('configuration defaults and required fields', () => {
   assert.deepEqual(parseConfig({ gateway: 'g', image: 'i' }), {
     executable: 'openshell',
+    sshExecutable: 'ssh',
+    enableDuplex: false,
     configHome: undefined,
     gateway: 'g',
     workspace: 'default',
@@ -21,6 +23,10 @@ test('configuration defaults and required fields', () => {
     { gateway: 'g' },
     { ...config, timeoutMs: 0 },
     { ...config, reuseLease: 'yes' },
+    { ...config, enableDuplex: 'true' },
+    { ...config, enableDuplex: null },
+    { ...config, sshExecutable: '' },
+    { ...config, sshExecutable: '\0' },
     { ...config, providers: [4] },
     { ...config, gateway: '-g' },
     { ...config, configHome: 'relative/config' },

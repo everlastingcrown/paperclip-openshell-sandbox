@@ -44,6 +44,8 @@ Use a runtime image containing your agent tooling. Acquisition checks the tools 
 | `workspace`           | `default`   | OpenShell workspace                          |
 | `configHome`          | inherited   | Worker-local XDG configuration directory     |
 | `executable`          | `openshell` | CLI executable                               |
+| `sshExecutable`       | `ssh`       | Worker SSH executable selector               |
+| `enableDuplex`        | `false`     | Enable duplex callback bridge for new runs   |
 | `policyFile`          | omitted     | Authored policy file on the worker           |
 | `providers`           | `[]`        | Existing credential-provider names           |
 | `timeoutMs`           | `300000`    | Acquisition/command budget, 1000–86400000 ms |
@@ -87,6 +89,132 @@ openshell --gateway my-gateway --workspace default sandbox exec \
   /bin/sh -c 'printf "JAVA_HOME=%s\nANDROID_HOME=%s\nANDROID_SDK_ROOT=%s\nPLAYWRIGHT_BROWSERS_PATH=%s\n" "$JAVA_HOME" "$ANDROID_HOME" "$ANDROID_SDK_ROOT" "$PLAYWRIGHT_BROWSERS_PATH"'
 ```
 
+## Opt-in duplex callback bridge
+
+The provider supports Paperclip's existing duplex command channel through one
+persistent noninteractive SSH command. Ordinary executions and native live output
+streaming keep their current behavior. The worker needs OpenSSH (`sshExecutable`,
+default `ssh`) as well as OpenShell 0.1.2. Install the provider with the environment
+option **off until controlled live acceptance succeeds**. Live exec-reduction
+measurements are outstanding; mocked and RPC tests do not establish live coverage.
+
+Two independent settings control new runs. The environment editor's **Enable
+duplex callback bridge** checkbox (`enableDuplex`, default false) stays editable.
+It requires an instance admin to enable `enableSandboxDuplexBridge` through the
+existing instance API; Paperclip v2026.1005.0 has no corresponding admin UI switch.
+The plugin never reads or modifies that instance setting.
+
+As an instance admin signed in to your Paperclip instance, run this in its browser
+console. It reads and records the previous value, patches only the duplex field,
+and verifies the effective setting using your existing same-origin login:
+
+```js
+const settingsPath = '/api/instance/settings/experimental';
+const beforeResponse = await fetch(settingsPath, {
+  credentials: 'same-origin',
+});
+if (!beforeResponse.ok)
+  throw new Error(`Read failed: ${beforeResponse.status}`);
+const beforeSettings = await beforeResponse.json();
+console.log('Previous value:', beforeSettings.enableSandboxDuplexBridge);
+const patchResponse = await fetch(settingsPath, {
+  method: 'PATCH',
+  credentials: 'same-origin',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ enableSandboxDuplexBridge: true }),
+});
+if (!patchResponse.ok)
+  throw new Error(`Update failed: ${patchResponse.status}`);
+const verifyResponse = await fetch(settingsPath, {
+  credentials: 'same-origin',
+  cache: 'no-store',
+});
+if (!verifyResponse.ok)
+  throw new Error(`Verify failed: ${verifyResponse.status}`);
+const effectiveSettings = await verifyResponse.json();
+if (effectiveSettings.enableSandboxDuplexBridge !== true)
+  throw new Error('Instance duplex setting is not effectively enabled');
+console.log(
+  'Instance duplex setting enabled; enable the environment option next.',
+);
+```
+
+API rejection or an effective managed-off setting must be resolved through your
+instance's authorization and policy; this endpoint does not bypass either.
+The instance flag and provider environment config are separate settings.
+Saving the environment option as true while the instance flag is false is valid.
+
+Next, enable the checkbox in the selected environment and turn **Stream run logs**
+off (`streamRunLogs: false`). The generic host hint that output appears only on
+completion does not describe this provider: its native streaming still delivers
+live output. Leaving this setting on retains extra log-tail polling. The plugin
+never changes it for you. Start a new run and confirm host duplex readiness.
+
+| Instance gate | Environment option | Hooks/capability | New run                                                     |
+| ------------- | ------------------ | ---------------- | ----------------------------------------------------------- |
+| Off/unknown   | Either             | Either           | File bridge                                                 |
+| On            | Off/missing        | Present          | Provider declines before SSH; bounded host startup fallback |
+| On            | On                 | Missing          | File bridge with capability diagnostic                      |
+| On            | On                 | Present          | SSH attempt, then host protocol readiness handshake         |
+
+An SSH spawn alone does not establish bridge readiness. Correlate worker
+`OpenShell duplex environment selection`, open duration and termination reason
+with host readiness/selection/fallback diagnostics using the route/session IDs.
+A fallback to file polling still risks exhausting OpenShell's lifetime budget of
+4,096 exec identities. After establishment, transport loss fails the channel;
+requests are not replayed or silently switched to file polling. SSH status 255,
+a local signal or a provider close is reported as transport loss, which does not
+prove remote termination. A known SSH remote exit is reported separately.
+
+For rollback, disable the environment checkbox, or repeat the PATCH with
+`enableSandboxDuplexBridge: false` and verify the effective value. Patch only that
+field; preserve unrelated instance settings. Changes select transport for new
+runs; established channels continue. The worker refreshes environment opt-in on
+the next successful validated acquisition, resume or execution. Release, stop,
+destroy and shutdown invalidate the saved lease and close its channels. After a
+worker restart, resume or execute with verified lease metadata before opening.
+
+The transport uses the pinned CLI's
+[name-mode SSH proxy](https://github.com/NVIDIA/OpenShell/blob/v0.1.2/crates/openshell-cli/src/ssh.rs),
+with explicit gateway/workspace and `XDG_CONFIG_HOME`. The CLI resolves local
+gateway credentials and creates a fresh SSH session per proxy invocation; the
+plugin does not store session tokens. SSH host-key checks match OpenShell's
+relay model: the authenticated gateway and its sandbox relay are the trust
+boundary, rather than a globally pinned sandbox SSH key. No global SSH files are
+changed. Inherited endpoint overrides and SSH config are excluded, PTY and
+interactive authentication are disabled, remote argv elements are quoted
+individually, and the supervisor receives `OPENSHELL_NO_LOGIN_SHELL=1`.
+
+Plugin limits are 128 concurrent routes, 1,024 recent close acknowledgements,
+1,024 saved verified leases (oldest evicted with channel cleanup), and 1,024
+concurrent validations. Per route: 192 KiB decoded input frames, 4 MiB queued
+input and 256 queued writes; write completion respects stdin backpressure and a
+10-second budget. Open has a 10-second budget; close allows 250 ms for stdin EOF,
+250 ms after SIGTERM, then up to 1 second after SIGKILL of the SSH process group,
+including proxy helpers. Stderr is discarded with a saturated 16 KiB diagnostic
+counter; no command, payload or stderr enters lifecycle logs. Output is raw binary
+in at most 16 KiB notifications, with no lifetime output accumulation or plugin
+pre-bind output queue. Ordinary exec retains its 4 MiB stdin and 16 MiB combined
+output limits.
+
+SDK notifications return void and do not propagate consumer backpressure. The
+pinned host bounds pre-bind frames/bytes, pending writes and route output (default
+256 MiB total data and one hour duration); its limits can terminate a channel.
+The plugin's slow-stdin tests verify its own queues, not end-to-end memory under
+a slow host consumer. Do not infer unlimited channel lifetime or bounded total
+worker RPC memory from this implementation.
+
+One bridge command consumes an exec identity; bytes sent on that command do not
+create more executions. Setup, sync and legitimate agent executions still consume
+identities. Neither activation nor rollback repairs an exhausted runtime; a
+controlled sandbox generation reset interrupts active work and requires separate
+operator planning. There is no automatic restart or command replay.
+
+See the [implementation handoff and live acceptance checklist](docs/duplex-implementation-handoff.md)
+and [validation record](docs/duplex-validation.md). Run `pnpm test:live -- --duplex`
+with the documented smoke variables for a fresh designated test sandbox; complete
+the real OpenCode workflow and 20-minute exec-count comparison separately.
+
 ## Failure handling and logs
 
 ### Long-running workloads
@@ -95,7 +223,7 @@ Execution output now streams through the SDK while the command runs, while the
 final result still contains complete stdout/stderr. Set `streamRunLogs: false` in
 Paperclip's sandbox configuration to disable its additional file-tail poller.
 This removes recurring log-tail execs; it does not disable the callback bridge.
-Persistent sessions and duplex transport remain unsupported by this provider.
+The optional duplex callback bridge below removes callback-queue polling once the host handshake succeeds. Persistent process sessions remain unsupported.
 
 Execution ownership checks use an OpenShell label selector for the lease's
 attempt instead of listing the entire workspace. All returned pages and ownership
@@ -105,7 +233,7 @@ cleanup lookups remain independent and complete. Inspection and execution now
 share the caller's timeout, so a short bridge command cannot spend the full
 environment timeout inspecting before starting another execution timeout.
 
-Paperclip's queue callback bridge still polls, and each poll still needs an exec.
+With duplex disabled or startup fallback selected, Paperclip's queue callback bridge still polls, and each poll still needs an exec.
 Provider execution diagnostics use debug logging to avoid two info-level host
 log events per poll. Live gateway CPU and latency improvements require measurement
 on the deployed workload.

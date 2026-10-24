@@ -23,6 +23,7 @@ const manifest: PaperclipPluginManifestV1 = {
       configSchema,
       sandboxCapabilities: {
         reusableLeases: true,
+        duplexCommandStream: true,
         independentControlCommands: true,
         nativeSyncIn: false,
         nativeSyncOut: false,

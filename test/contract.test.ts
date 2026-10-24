@@ -10,6 +10,7 @@ test('manifest validates against pinned SDK shared contract', async () => {
   assert.deepEqual(manifest.capabilities, ['environment.drivers.register']);
   assert.deepEqual(manifest.environmentDrivers![0].sandboxCapabilities, {
     reusableLeases: true,
+    duplexCommandStream: true,
     independentControlCommands: true,
     nativeSyncIn: false,
     nativeSyncOut: false,
@@ -47,6 +48,10 @@ test('real worker advertises every declared lifecycle capability and stop-only h
     assert.equal(response.result.ok, true);
     const methods = response.result.supportedMethods;
     for (const method of [
+      'duplexChannelOpen',
+      'duplexChannelWrite',
+      'duplexChannelStop',
+      'duplexChannelClose',
       'environmentAcquireLease',
       'environmentResumeLease',
       'environmentReleaseLease',
@@ -182,6 +187,139 @@ test('real SDK routes interleaved output before concurrent execute replies', asy
           messages.findIndex((m) => m.id === (command === 'first' ? 2 : 3)),
       );
     }
+  } finally {
+    clearTimeout(timer);
+    lines.close();
+    child.stdin.end();
+    child.kill();
+  }
+});
+
+test('real SDK duplex RPC binds byte notifications, route-only close and exit exactly once', async () => {
+  const source = `
+    import { spawn } from 'node:child_process';
+    import { startWorkerRpcHost } from '@paperclipai/plugin-sdk';
+    import { createPlugin } from './src/plugin.ts';
+    import { OpenShellProvider } from './src/provider.ts';
+    import { fake } from './test/helpers.ts';
+    const f = fake();
+    const provider = new OpenShellProvider(f.runner, 1, () => spawn(process.execPath,
+      ['-e', 'process.stdin.pipe(process.stdout)'], { stdio: ['pipe', 'pipe', 'pipe'], detached: true }));
+    startWorkerRpcHost({ plugin: createPlugin(provider) });
+  `;
+  const child = spawn(
+    process.execPath,
+    ['--import', 'tsx', '--input-type=module', '-e', source],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  );
+  const lines = createInterface({ input: child.stdout });
+  const messages: any[] = [];
+  const pending = new Map<number, (message: any) => void>();
+  let id = 0;
+  lines.on('line', (line) => {
+    const message = JSON.parse(line);
+    messages.push(message);
+    if (message.id) {
+      pending.get(message.id)?.(message);
+      pending.delete(message.id);
+    }
+  });
+  const timer = setTimeout(() => child.kill('SIGKILL'), 8000);
+  const call = (method: string, params: unknown) =>
+    new Promise<any>((resolve, reject) => {
+      const requestId = ++id;
+      pending.set(requestId, (message) =>
+        message.error
+          ? reject(new Error(JSON.stringify(message.error)))
+          : resolve(message.result),
+      );
+      child.stdin.write(
+        JSON.stringify({ jsonrpc: '2.0', id: requestId, method, params }) +
+          '\n',
+      );
+    });
+  try {
+    await call('initialize', {
+      manifest,
+      config: {},
+      apiVersion: 1,
+      instanceInfo: { instanceId: 'test', hostVersion: '2026.1005.0' },
+    });
+    const base = {
+      driverKey: 'openshell',
+      companyId: 'company',
+      environmentId: 'environment',
+      runId: 'run',
+      config: {
+        gateway: 'test',
+        image: 'runtime:test',
+        enableDuplex: true,
+        timeoutMs: 1000,
+      },
+    };
+    const lease = await call('environmentAcquireLease', base);
+    const pair = await call('duplexChannelOpen', {
+      ...base,
+      providerLeaseId: lease.providerLeaseId,
+      hostRouteId: 'rpc-route',
+      command: ['cat'],
+    });
+    assert.equal(pair.hostRouteId, 'rpc-route');
+    await assert.rejects(
+      call('duplexChannelWrite', {
+        ...pair,
+        workerSessionId: 'wrong',
+        data: 'AA==',
+      }),
+      /unavailable/,
+    );
+    await call('duplexChannelWrite', {
+      ...pair,
+      data: Buffer.from([0, 255, 128]).toString('base64'),
+    });
+    const data = await new Promise<any>((resolve, reject) => {
+      const existing = messages.find((m) => m.method === 'duplexChannel.data');
+      if (existing) {
+        resolve(existing);
+        return;
+      }
+      const deadline = setTimeout(
+        () => reject(new Error('Missing duplex data')),
+        3000,
+      );
+      const onLine = (line: string) => {
+        const message = JSON.parse(line);
+        if (message.method === 'duplexChannel.data') {
+          clearTimeout(deadline);
+          lines.off('line', onLine);
+          resolve(message);
+        }
+      };
+      lines.on('line', onLine);
+    });
+    assert.deepEqual(data.params, {
+      ...pair,
+      chunk: Buffer.from([0, 255, 128]).toString('base64'),
+    });
+    assert.deepEqual(
+      await call('duplexChannelClose', { hostRouteId: 'rpc-route' }),
+      pair,
+    );
+    assert.deepEqual(
+      await call('duplexChannelClose', {
+        hostRouteId: 'rpc-route',
+        workerSessionId: 'non-authoritative',
+      }),
+      pair,
+    );
+    const exits = messages.filter((m) => m.method === 'duplexChannel.exit');
+    assert.equal(exits.length, 1);
+    assert.deepEqual(exits[0].params, {
+      ...pair,
+      exitCode: null,
+      transportClosed: true,
+    });
+    assert.ok(messages.indexOf(data) < messages.indexOf(exits[0]));
   } finally {
     clearTimeout(timer);
     lines.close();

@@ -6,6 +6,8 @@ export const runtimeTools =
   );
 export interface Config {
   executable: string;
+  sshExecutable: string;
+  enableDuplex: boolean;
   configHome?: string;
   gateway: string;
   workspace: string;
@@ -39,6 +41,8 @@ export function parseConfig(raw: Record<string, unknown>): Config {
     throw new Error('Invalid timeoutMs (1000–86400000)');
   if (raw.reuseLease !== undefined && typeof raw.reuseLease !== 'boolean')
     throw new Error('Invalid reuseLease');
+  if (raw.enableDuplex !== undefined && typeof raw.enableDuplex !== 'boolean')
+    throw new Error('Invalid enableDuplex');
   const providers = raw.providers ?? [];
   if (
     !Array.isArray(providers) ||
@@ -68,6 +72,8 @@ export function parseConfig(raw: Record<string, unknown>): Config {
     );
   return {
     executable: str('executable', 'openshell'),
+    sshExecutable: str('sshExecutable', 'ssh'),
+    enableDuplex: raw.enableDuplex === true,
     configHome,
     gateway,
     workspace,
@@ -86,6 +92,14 @@ export const configSchema = {
   oneOf: [{ required: ['image'] }, { required: ['template'] }],
   properties: {
     executable: { type: 'string', default: 'openshell' },
+    sshExecutable: { type: 'string', default: 'ssh' },
+    enableDuplex: {
+      type: 'boolean',
+      title: 'Enable duplex callback bridge',
+      default: false,
+      description:
+        "Requires Paperclip's instance setting enableSandboxDuplexBridge=true as well as this option. An instance admin must enable it through the instance settings API; see the provider README for instructions. With either option off, runs use file polling. Existing runs keep their current transport.",
+    },
     configHome: { type: 'string' },
     gateway: { type: 'string', minLength: 1 },
     workspace: { type: 'string', default: 'default' },

@@ -1,6 +1,8 @@
 # Duplex transport implementation handoff
 
-Status: implementation plan; no duplex implementation is included in this change.
+Status: provider implementation delivered, default off. Local validation and
+outstanding host/live acceptance are recorded in [duplex validation](duplex-validation.md).
+The design and acceptance requirements below remain the rollout checklist.
 Prepared 2026-10-24. Baseline: Paperclip/plugin-sdk **2026.1005.0**, OpenShell
 **0.1.2**, Node **>=24.11.0**, pnpm **10.33.2**.
 

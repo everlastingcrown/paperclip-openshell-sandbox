@@ -11,3 +11,5 @@ This implementation was reviewed against the pinned versions, not inferred from 
 - [OpenShell initial process environment](https://github.com/NVIDIA/OpenShell/blob/v0.1.2/crates/openshell-sandbox/src/process.rs) and [exec environment](https://github.com/NVIDIA/OpenShell/blob/v0.1.2/crates/openshell-sandbox/src/boundary_exec.rs): the initial process inherits image environment variables, while exec clears inheritance and reconstructs selected defaults, configured user environment, TLS/provider variables, and exec overrides. Required non-secret image variables must also be declared on the OpenShell template to reach task commands. The login-shell flag controls startup-file sourcing, not image environment inheritance.
 
 Ownership, pagination completeness, process I/O limits and stop preservation remain enforced. Simplification removes provider configuration layers and local policy authoring, rather than removing the checks that prevent deleting another sandbox or losing track of an uncertain allocation.
+
+Duplex proxy, host fallback, SDK routing and outstanding live acceptance are recorded in [duplex validation](duplex-validation.md).

@@ -42,10 +42,16 @@ export function createPlugin(provider = new OpenShellProvider()) {
   return definePlugin({
     async setup(ctx) {
       logger = ctx.logger;
+      provider.duplex.notifications = ctx.duplexChannel;
       onOutput = (stream, chunk) => ctx.execution.log(stream, chunk);
       provider.setPluginConfig((companyId) => ctx.config.get(companyId));
       provider.setLogger(ctx.logger);
     },
+    onShutdown: () => provider.shutdown(),
+    onDuplexChannelOpen: (p) => provider.duplex.open(p),
+    onDuplexChannelWrite: (p) => provider.duplex.write(p),
+    onDuplexChannelStop: (p) => provider.duplex.stop(p),
+    onDuplexChannelClose: (p) => provider.duplex.close(p),
     async onValidateConfig(config) {
       try {
         parseCleanupRecovery(config);

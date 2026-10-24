@@ -24,7 +24,12 @@ export class SandboxClient {
     private readonly pollMs = 500,
     readonly clock: Clock = systemClock,
   ) {}
-  async command(c: Config, args: string[], deadline: number) {
+  async command(
+    c: Config,
+    args: string[],
+    deadline: number,
+    signal?: AbortSignal,
+  ) {
     const started = this.clock.now();
     const fields = {
       operation: args[0],
@@ -39,6 +44,7 @@ export class SandboxClient {
         deadline,
         this.runner,
         this.clock,
+        signal,
       );
       log(this.logger, 'debug', 'OpenShell command completed', {
         ...fields,
@@ -112,11 +118,14 @@ export class SandboxClient {
     name: string,
     deadline: number,
     selector?: string,
+    signal?: AbortSignal,
   ): Promise<Sandbox | null> {
     let match: Sandbox | null = null;
     let token = '';
     const seen = new Set<string>();
     for (let page = 0; page < 1000; page++) {
+      if (signal?.aborted)
+        throw new OpenShellCommandError('OpenShell command cancelled');
       const response = object(
         json(
           await this.command(
@@ -132,6 +141,7 @@ export class SandboxClient {
               ...(selector ? ['--selector', selector] : []),
             ],
             deadline,
+            signal,
           ),
         ),
       );

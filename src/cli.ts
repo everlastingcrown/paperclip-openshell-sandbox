@@ -119,6 +119,7 @@ export type Runner = (
   stdin?: string,
   env?: { XDG_CONFIG_HOME?: string },
   onOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void,
+  signal?: AbortSignal,
 ) => Promise<CommandResult>;
 export function checkStdin(stdin = '') {
   if (typeof stdin !== 'string') throw new Error('Invalid execution stdin');
@@ -133,8 +134,11 @@ export function createRunner(spawnProcess: typeof spawn = spawn): Runner {
     stdin = '',
     overrides = {},
     onOutput,
+    cancellationSignal,
   ) => {
     checkStdin(stdin);
+    if (cancellationSignal?.aborted)
+      throw new OpenShellCommandError('OpenShell command cancelled');
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
       throw new Error('Operation deadline exceeded');
     return new Promise((resolve, reject) => {
@@ -181,6 +185,8 @@ export function createRunner(spawnProcess: typeof spawn = spawn): Runner {
         kill('SIGTERM');
         hard ??= setTimeout(() => kill('SIGKILL'), 250);
       };
+      const cancelled = () => terminate();
+      cancellationSignal?.addEventListener('abort', cancelled, { once: true });
       const timer = setTimeout(() => {
         timedOut = true;
         terminate();
@@ -222,6 +228,7 @@ export function createRunner(spawnProcess: typeof spawn = spawn): Runner {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        cancellationSignal?.removeEventListener('abort', cancelled);
         if (hard) clearTimeout(hard);
         if (error) reject(error);
         else resolve(result!);
@@ -242,7 +249,9 @@ export function createRunner(spawnProcess: typeof spawn = spawn): Runner {
           emit('stdout', decoders.stdout.end());
           emit('stderr', decoders.stderr.end());
         }
-        if (overflow)
+        if (cancellationSignal?.aborted)
+          finish(new OpenShellCommandError('OpenShell command cancelled'));
+        else if (overflow)
           finish(
             new OpenShellCommandError('OpenShell output exceeds 16 MiB limit'),
           );
@@ -273,6 +282,7 @@ export async function lifecycle(
   deadline: number,
   runner: Runner,
   clock: Clock = systemClock,
+  signal?: AbortSignal,
 ): Promise<string> {
   const timeoutMs = remaining(deadline, clock);
   const result = await invoke(
@@ -282,6 +292,8 @@ export async function lifecycle(
     timeoutMs,
     undefined,
     c.configHome ? { XDG_CONFIG_HOME: c.configHome } : {},
+    undefined,
+    signal,
   );
   if (result.timedOut || result.exitCode !== 0)
     throw commandFailure(c, args[0], result);

@@ -7,6 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { OpenShellProvider } from '../src/provider.js';
 import { parseConfig } from '../src/config.js';
 import { run } from '../src/cli.js';
+import { encodeChannelBytes } from '@paperclipai/plugin-sdk';
+const duplexMode = process.argv.includes('--duplex');
 // Uses the real host fallback from an installed v2026.1005.0 checkout.
 if (!process.env.OPENSHELL_SMOKE_CONFIG || !process.env.PAPERCLIP_SOURCE) {
   console.log(
@@ -44,6 +46,7 @@ const { prepareSandboxManagedRuntime } = await import(
 const config = {
   ...JSON.parse(await readFile(process.env.OPENSHELL_SMOKE_CONFIG, 'utf8')),
   reuseLease: true,
+  ...(duplexMode ? { enableDuplex: true } : {}),
 };
 const runtimeConfig = parseConfig(config);
 const version = await run(runtimeConfig.executable, ['--version'], 5000);
@@ -67,6 +70,60 @@ try {
   const binary = Buffer.alloc(4 * 1024 * 1024, 0xa5);
   await writeFile(path.join(local, 'binary.dat'), binary);
   lease = await provider.acquire(base);
+  if (duplexMode) {
+    const chunks: Buffer[] = [];
+    let received!: () => void;
+    let expected = 0;
+    let exitCount = 0;
+    provider.duplex.notifications = {
+      data: (_route, _session, bytes) => {
+        chunks.push(Buffer.from(bytes));
+        if (Buffer.concat(chunks).length >= expected) received?.();
+      },
+      exit: () => {
+        exitCount++;
+      },
+    };
+    const sshVersion = await run(runtimeConfig.sshExecutable, ['-V'], 5000);
+    assert.equal(sshVersion.exitCode, 0, 'Worker requires OpenSSH');
+    const pair = await provider.duplex.open({
+      ...base,
+      providerLeaseId: lease.providerLeaseId!,
+      hostRouteId: 'live-smoke-duplex',
+      command: ['node', '-e', 'process.stdin.pipe(process.stdout)'],
+    });
+    const roundtrip = async (bytes: Buffer) => {
+      expected += bytes.length;
+      const output = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error('Duplex echo timed out')),
+          10_000,
+        );
+        received = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+      });
+      await provider.duplex.write({ ...pair, data: encodeChannelBytes(bytes) });
+      await output;
+    };
+    const binary = Buffer.from([0, 255, 128, 10]);
+    try {
+      await roundtrip(binary);
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await roundtrip(binary);
+      assert.deepEqual(Buffer.concat(chunks), Buffer.concat([binary, binary]));
+    } finally {
+      assert.deepEqual(
+        await provider.duplex.close({ hostRouteId: pair.hostRouteId }),
+        pair,
+      );
+    }
+    assert.equal(exitCount, 1);
+    console.log(
+      'PASS: real SSH binary duplex, delayed stdin after idle, route-only close; host callback workflow and 20-minute exec counts still require operator acceptance',
+    );
+  }
   const metadata = lease.metadata!;
   const cwd = metadata.remoteCwd as string;
   const execute = async (input: any) => ({
@@ -140,6 +197,7 @@ try {
         leaseMetadata: lease.metadata,
       });
   } finally {
+    await provider.shutdown();
     await rm(temp, { recursive: true, force: true });
   }
 }
