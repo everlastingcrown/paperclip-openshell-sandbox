@@ -1,5 +1,11 @@
 # Proposal: reduce OpenShell exec traffic and adapter latency
 
+For the current duplex implementation plan, including the environment opt-in,
+instance-setting API prerequisite, and provider-only implementation, see the
+[duplex handoff](duplex-implementation-handoff.md). That plan supersedes the
+remaining duplex design below. It requires no Paperclip code changes. This document records
+the earlier proposal and the streaming work already completed.
+
 Status: partially implemented. Native output forwarding, execution-scoped
 in-flight inspection sharing, label filtering, and a shared inspection/execution
 deadline are implemented. SSH duplex channels remain proposed; callback queue
