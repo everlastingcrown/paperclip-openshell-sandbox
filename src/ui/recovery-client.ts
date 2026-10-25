@@ -119,7 +119,12 @@ export function mergeRecovery(
 }
 
 export class RecoveryClient {
-  constructor(private readonly request: typeof fetch = fetch) {}
+  // Window.fetch must be called with the browser global as its receiver,
+  // rather than as a method of this client.
+  constructor(
+    private readonly request: typeof fetch = (...args) =>
+      globalThis.fetch(...args),
+  ) {}
 
   private async api<T>(
     path: string,

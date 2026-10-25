@@ -51,6 +51,33 @@ const response = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status });
 const configPath = `/api/plugins/${pluginId}/config`;
 
+test('default browser fetch retains its global receiver for loading and saving', async () => {
+  const originalFetch = globalThis.fetch;
+  const pending = fixture();
+  let posts = 0;
+  globalThis.fetch = async function (this: unknown, path, init) {
+    assert.equal(this, globalThis, 'Window.fetch requires its global receiver');
+    const url = String(path);
+    if (init?.method === 'POST') {
+      posts++;
+      return response({});
+    }
+    if (url.includes('/config?')) return response(null);
+    if (url.endsWith('/environments')) return response([pending.environment]);
+    if (url.includes('/environment-leases/')) return response(pending.lease);
+    return response([pending.lease]);
+  };
+  try {
+    const client = new RecoveryClient();
+    const snapshot = await client.load('company', signal());
+    assert.equal(snapshot.pending.length, 1);
+    await client.save('company', pending, recoveryDraft(pending, {}), signal());
+    assert.equal(posts, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('recovery form uses persisted scope and matching recovery override', () => {
   const pending = fixture();
   const config = {
