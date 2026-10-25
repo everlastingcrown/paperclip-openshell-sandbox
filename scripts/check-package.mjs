@@ -75,6 +75,10 @@ assert.equal(directManifest.version, manifest.version);
 const hostManifestPath = ${JSON.stringify(path.join(installed, actual.paperclipPlugin.manifest))};
 const hostManifest = (await import(pathToFileURL(hostManifestPath).href)).default;
 assert.deepEqual(hostManifest, manifest);
+const uiBundle = await readFile(${JSON.stringify(path.join(installed, 'dist/ui/index.js'))}, 'utf8');
+assert.equal(hostManifest.entrypoints.ui, './dist/ui');
+assert.match(uiBundle, /RecoveryPage/);
+assert.match(uiBundle, /RecoveryLink/);
 // Reproduce successive npm installs in one host process, with normalized
 // tarball mtimes and the same package directory. Both metadata and schema
 // must refresh, without relying on a server restart.

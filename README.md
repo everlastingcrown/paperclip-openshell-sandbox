@@ -265,7 +265,15 @@ Logs include operation start/completion/failure, company/environment/run and att
 
 To debug, find the acquisition attempt/environment ID in the Paperclip plugin logs, then correlate the sandbox name with your OpenShell gateway logs. Check gateway registration, the worker's config directory, template/image, authored policy and existing credential providers. Retry Test Provider after fixing the cause.
 
-For old pending cleanup records or a moved configuration directory, plugin instance configuration supports the recovery escape hatch:
+Open **OpenShell recovery** in Paperclip's sidebar to review this company's pending cleanup records. Select an environment to fill in its original gateway and workspace from saved lease information. If the worker's configuration directory moved, enter its new absolute path (the parent of the `openshell` directory), then choose **Save recovery settings**. Saving requires an instance administrator and enabled plugin management.
+
+Saving updates recovery settings for Paperclip's next automatic cleanup attempt; it does not trigger immediate cleanup or delete the environment. Use **Refresh status** later to reload Paperclip's saved cleanup status. Retries may be delayed. A gateway outage still needs to be fixed before cleanup can succeed.
+
+The **Advanced: creation was rejected** section appears only when the record contains an identified creation attempt. Confirm it only after gateway or CLI evidence proves that exact attempt was rejected before allocation. A timeout or an absent sandbox is insufficient evidence. Normal retries need no such confirmation.
+
+The page lists this company's OpenShell leases attached to existing environments. It cannot discover leases whose environment record has been removed, inspect live OpenShell state, force a retry, or mark cleanup complete. Settings apply to the selected environment, remain saved after cleanup, and can be reviewed or removed in the plugin settings. Refreshing or selecting another cleanup record discards unsaved form changes.
+
+For advanced recovery, including old pending cleanup records, plugin configuration still supports the manual escape hatch:
 
 ```json
 {

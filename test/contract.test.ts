@@ -7,7 +7,16 @@ import manifest from '../src/manifest.js';
 test('manifest validates against pinned SDK shared contract', async () => {
   assert.equal(pluginManifestV1Schema.safeParse(manifest).success, true);
   assert.equal(manifest.id, 'paperclip.openshell-sandbox-provider');
-  assert.deepEqual(manifest.capabilities, ['environment.drivers.register']);
+  assert.deepEqual(manifest.capabilities, [
+    'environment.drivers.register',
+    'ui.page.register',
+    'ui.sidebar.register',
+  ]);
+  assert.equal(manifest.entrypoints.ui, './dist/ui');
+  assert.equal(
+    manifest.ui?.slots?.find((slot) => slot.type === 'page')?.exportName,
+    'RecoveryPage',
+  );
   assert.deepEqual(manifest.environmentDrivers![0].sandboxCapabilities, {
     reusableLeases: true,
     duplexCommandStream: true,

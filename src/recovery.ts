@@ -74,7 +74,7 @@ export const recoveryConfigSchema = {
       title: 'Cleanup recovery entries',
       default: [],
       description:
-        'Advanced operator recovery for environments with pending cleanup. Leave empty for normal operation. Each entry uses the original gateway and workspace and is scoped to the invoking company and environment.',
+        'Advanced operator recovery. Use the OpenShell recovery page in the sidebar to fill these entries from pending cleanup records. Leave empty for normal operation. Saving settings does not trigger immediate cleanup. Each entry uses the original gateway and workspace and is scoped to the invoking company and environment.',
       items: {
         type: 'object',
         additionalProperties: false,

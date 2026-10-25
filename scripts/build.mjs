@@ -1,5 +1,6 @@
 import { readFile, writeFile, rm } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
+import { build } from 'esbuild';
 const pkg = JSON.parse(await readFile('package.json', 'utf8'));
 const { version } = pkg;
 await writeFile(
@@ -9,6 +10,15 @@ await writeFile(
 await rm('dist', { recursive: true, force: true });
 execFileSync(process.execPath, ['node_modules/typescript/bin/tsc'], {
   stdio: 'inherit',
+});
+await build({
+  entryPoints: ['src/ui/index.tsx'],
+  outfile: 'dist/ui/index.js',
+  bundle: true,
+  format: 'esm',
+  platform: 'browser',
+  target: 'es2022',
+  external: ['react', 'react/jsx-runtime', '@paperclipai/plugin-sdk/ui'],
 });
 // Paperclip 2026.1005.0 caches manifest imports by path and mtime. npm packs
 // normalize mtimes, and cache busting a parent does not refresh its imports.

@@ -2,7 +2,8 @@ import type { PaperclipPluginManifestV1 } from '@paperclipai/plugin-sdk';
 import { configSchema } from './config.js';
 import { version } from './version.js';
 import { recoveryConfigSchema } from './recovery.js';
-export const pluginId = 'paperclip.openshell-sandbox-provider';
+import { pluginId } from './plugin-id.js';
+export { pluginId } from './plugin-id.js';
 const manifest: PaperclipPluginManifestV1 = {
   id: pluginId,
   apiVersion: 1,
@@ -11,8 +12,29 @@ const manifest: PaperclipPluginManifestV1 = {
   description: 'Host CLI integration for OpenShell v0.1.2',
   author: 'everlastingcrown',
   categories: ['workspace'],
-  capabilities: ['environment.drivers.register'],
-  entrypoints: { worker: './dist/worker.js' },
+  capabilities: [
+    'environment.drivers.register',
+    'ui.page.register',
+    'ui.sidebar.register',
+  ],
+  entrypoints: { worker: './dist/worker.js', ui: './dist/ui' },
+  ui: {
+    slots: [
+      {
+        type: 'page',
+        id: 'cleanup',
+        displayName: 'OpenShell recovery',
+        exportName: 'RecoveryPage',
+        routePath: 'openshell-recovery',
+      },
+      {
+        type: 'sidebar',
+        id: 'cleanup-link',
+        displayName: 'OpenShell recovery',
+        exportName: 'RecoveryLink',
+      },
+    ],
+  },
   instanceConfigSchema: recoveryConfigSchema,
   environmentDrivers: [
     {
