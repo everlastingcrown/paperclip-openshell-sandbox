@@ -29,7 +29,7 @@ Templates specify the workload image, resources, driver configuration and enviro
 }
 ```
 
-For a simple workload without a template, replace `template` with `image`. Configure resource limits in an OpenShell template. The provider starts a persistent `/bin/sh` process and uses `/sandbox/paperclip-workspace`. Your image and policy must allow workspace writes and these tools:
+In the environment form, choose exactly one workload source: **Workload template** (recommended) or **Container image**. Leave the unused field blank. For a simple workload without a template, replace `template` with `image`. Configure resource limits in an OpenShell template. The provider starts a persistent `/bin/sh` process and uses `/sandbox/paperclip-workspace`. Your image and policy must allow workspace writes and these tools:
 
 ```text
 sh bash node git tar base64 cat mkdir rm mv chmod find dd wc basename awk sed head tail touch cp ln sleep
@@ -50,6 +50,10 @@ Use a runtime image containing your agent tooling. Acquisition checks the tools 
 | `providers`           | `[]`        | Existing credential-provider names           |
 | `timeoutMs`           | `300000`    | Acquisition/command budget, 1000–86400000 ms |
 | `reuseLease`          | `false`     | Keep ordinary released leases for resume     |
+
+The form puts gateway, workspace and worker configuration first, followed by the two workload alternatives. **Advanced options** groups policy and credentials, lifecycle settings, worker executables and callback transport. Credential providers use an editable list; reuse and duplex use checkboxes; the timeout uses a bounded numeric input.
+
+Leaving `workspace`, `executable`, `sshExecutable` or `timeoutMs` blank uses the defaults above, including when a previously entered value is cleared. Blank `configHome` and `policyFile` values are treated as omitted. Gateway and the selected workload source still require values; there is no default gateway, template or image.
 
 Paperclip-owned and future configuration fields are accepted and preserved. Only fields the provider consumes are validated. OpenShell validates policy and template contents when creating the sandbox. Plugin instance settings are unnecessary for normal operation.
 

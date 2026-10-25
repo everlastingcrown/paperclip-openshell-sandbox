@@ -17,8 +17,15 @@ export function parseCleanupRecovery(
     if (!entry || typeof entry !== 'object' || Array.isArray(entry))
       throw new Error('Invalid cleanupRecovery entry');
     const value = entry as Record<string, unknown>;
-    const { environmentId, gateway, configHome } = value;
-    const workspace = value.workspace ?? 'default';
+    const { environmentId, gateway } = value;
+    const configHome =
+      typeof value.configHome === 'string' && !value.configHome.trim()
+        ? undefined
+        : value.configHome;
+    const workspace =
+      typeof value.workspace === 'string' && !value.workspace.trim()
+        ? 'default'
+        : (value.workspace ?? 'default');
     const rejectedAttemptIds = value.rejectedAttemptIds ?? [];
     if (
       typeof environmentId !== 'string' ||
@@ -64,26 +71,48 @@ export const recoveryConfigSchema = {
   properties: {
     cleanupRecovery: {
       type: 'array',
+      title: 'Cleanup recovery entries',
       default: [],
       description:
-        'Operator recovery for pending cleanup; scoped to the invoking company and environment',
+        'Advanced operator recovery for environments with pending cleanup. Leave empty for normal operation. Each entry uses the original gateway and workspace and is scoped to the invoking company and environment.',
       items: {
         type: 'object',
         additionalProperties: false,
         required: ['environmentId', 'gateway'],
         properties: {
-          environmentId: { type: 'string', minLength: 1 },
-          gateway: { type: 'string', minLength: 1 },
-          workspace: { type: 'string', default: 'default' },
+          environmentId: {
+            type: 'string',
+            title: 'Paperclip environment ID',
+            minLength: 1,
+            description:
+              'ID of the environment awaiting cleanup, not its display name or sandbox ID. Add only one recovery entry per environment.',
+          },
+          gateway: {
+            type: 'string',
+            title: 'Original OpenShell gateway',
+            minLength: 1,
+            description:
+              'Registered gateway name used for the original allocation.',
+          },
+          workspace: {
+            type: 'string',
+            title: 'Original OpenShell workspace',
+            default: 'default',
+            description:
+              'Workspace used for the original allocation. Leave blank to use "default".',
+          },
           configHome: {
             type: 'string',
-            description: 'Absolute XDG config directory used for cleanup only',
+            title: 'Worker configuration directory',
+            description:
+              'Absolute worker-local XDG_CONFIG_HOME containing the openshell directory used for cleanup. Leave blank to inherit the worker configuration.',
           },
           rejectedAttemptIds: {
             type: 'array',
+            title: 'Verified rejected creation attempts',
             default: [],
             description:
-              'Attempt UUIDs whose original creation was verified rejected; successful scoped absence is required to reconcile',
+              'Leave empty unless the original creation was verified rejected. Add one canonical lowercase attempt UUID per item from the cleanup evidence. A timeout alone is not proof of rejection; successful scoped absence is also required to reconcile.',
             items: { type: 'string', pattern: attemptPattern },
           },
         },
