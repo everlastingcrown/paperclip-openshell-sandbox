@@ -2,6 +2,7 @@ import { OpenShellProvider } from '../src/provider.js';
 import type { Sandbox } from '../src/identity.js';
 import type { PluginEnvironmentLease } from '@paperclipai/plugin-sdk';
 import type { Runner, CommandResult } from '../src/cli.js';
+import type { SandboxClient } from '../src/sandbox-client.js';
 export const config = {
   gateway: 'test',
   image: 'runtime:test',
@@ -79,6 +80,17 @@ export function fake(
     return ok();
   };
   const provider = new OpenShellProvider(runner, 1);
+  // Fake CLI operations do no real I/O. Advance time only for requested waits,
+  // so scheduling delays and wall-clock changes cannot exhaust their budgets.
+  let now = 0;
+  Object.assign((provider as unknown as { client: SandboxClient }).client, {
+    clock: {
+      now: () => now,
+      async sleep(ms: number) {
+        now += ms;
+      },
+    },
+  });
   if (settings) provider.setPluginConfig(async () => settings);
   return {
     settings: settings ?? {},

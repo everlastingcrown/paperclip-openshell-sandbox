@@ -2,6 +2,20 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createPlugin } from '../src/plugin.js';
 import { ok, fake, release } from './helpers.js';
+import { systemClock } from '../src/deadline.js';
+
+test('fake lifecycle budgets are independent of wall-clock jumps', async (t) => {
+  let wallTime = 0;
+  t.mock.method(systemClock, 'now', () => (wallTime += 2000));
+  const f = fake();
+  const lease = await f.provider.acquire(f.params);
+  assert.deepEqual(await f.provider.release(release(f, lease)), {
+    providerLeaseId: 'sandbox-id',
+    state: 'destroyed',
+  });
+  assert.equal(f.record, undefined);
+});
+
 test('draft probes return diagnostics and never allocate', async () => {
   const f = fake();
   const plugin = createPlugin(f.provider);
