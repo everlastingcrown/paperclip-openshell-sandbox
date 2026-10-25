@@ -162,6 +162,7 @@ test('logger failures cannot prevent acquisition or cleanup or mask the original
   };
   const plugin = createPlugin(f.provider);
   await plugin.definition.setup({
+    data: { register() {} },
     logger: { debug: broken, info: broken, warn: broken, error: broken },
     config: {
       async get() {

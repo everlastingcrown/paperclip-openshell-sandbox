@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { useHostContext, useHostNavigation } from '@paperclipai/plugin-sdk/ui';
+import {
+  useHostContext,
+  useHostNavigation,
+  useHostLocation,
+  usePluginData,
+} from '@paperclipai/plugin-sdk/ui';
 import {
   creationAttempt,
   RecoveryClient,
@@ -22,20 +27,92 @@ function message(error: unknown): string {
     : 'Recovery information could not be loaded. Refresh and try again.';
 }
 
+function useRecoveryPageSettings() {
+  const { pathname } = useHostLocation();
+  // The host supplies the authorized company scope. Recheck after navigation
+  // (including leaving plugin settings) or returning to the browser window.
+  const query = usePluginData<{ showRecoveryPage: boolean }>(
+    'recovery-page-settings',
+    { pathname },
+  );
+  const { refresh } = query;
+  useEffect(() => {
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, [refresh]);
+  return query;
+}
+
 export function RecoveryLink() {
   const navigation = useHostNavigation();
+  const { pathname } = useHostLocation();
+  const { companyId } = useHostContext();
+  const settings = useRecoveryPageSettings();
+  if (
+    !companyId ||
+    settings.loading ||
+    settings.error ||
+    !settings.data?.showRecoveryPage
+  )
+    return null;
+  const active = pathname === navigation.resolveHref('/openshell-recovery');
   return (
     <a
       {...navigation.linkProps('/openshell-recovery')}
-      className="flex items-center px-3 py-2 text-sm font-medium hover:bg-accent rounded-md"
+      aria-current={active ? 'page' : undefined}
+      className={`flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium transition-colors ${active ? 'bg-sidebar-accent text-sidebar-accent-foreground' : 'text-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground'}`}
     >
-      OpenShell recovery
+      <span data-slot="sidebar-nav-icon" className="relative shrink-0">
+        <svg
+          className="h-4 w-4"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M3 12a9 9 0 1 0 2.64-6.36L3 8" />
+          <path d="M3 3v5h5M12 7v5l3 2" />
+        </svg>
+      </span>
+      <span className="min-w-0 flex-1 truncate">OpenShell recovery</span>
     </a>
   );
 }
 
 export function RecoveryPage() {
   const { companyId } = useHostContext();
+  const settings = useRecoveryPageSettings();
+  if (companyId && settings.loading)
+    return (
+      <p role="status" className="p-6">
+        Loading recovery page settings…
+      </p>
+    );
+  if (companyId && settings.error)
+    return (
+      <div className="p-6 space-y-3">
+        <p role="alert">Recovery page settings could not be loaded.</p>
+        <button className={button} onClick={settings.refresh}>
+          Try again
+        </button>
+      </div>
+    );
+  if (companyId && !settings.data?.showRecoveryPage)
+    return (
+      <section className="p-6 space-y-2">
+        <h1 className="text-2xl font-semibold">OpenShell recovery</h1>
+        <p>
+          This page is disabled for this company. An administrator can enable
+          “Show OpenShell recovery page” in plugin settings.
+        </p>
+        <p className="text-sm text-muted-foreground">
+          Automatic cleanup and saved recovery entries still apply.
+        </p>
+      </section>
+    );
   return (
     <main className="mx-auto w-full max-w-3xl p-6 space-y-6">
       <header className="space-y-2">

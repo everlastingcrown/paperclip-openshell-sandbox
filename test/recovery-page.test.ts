@@ -20,6 +20,13 @@ test('guided recovery page explains, prefills, saves and refreshes without runni
   let companyId: string | null = 'company';
   let pending = true;
   let denied = false;
+  let settingsLoading = false;
+  let settingsError = false;
+  let pathname = '/COMPANY/openshell-recovery';
+  let settingsRefreshes = 0;
+  const refreshSettings = () => {
+    settingsRefreshes++;
+  };
   let config: any = {};
   const writes: any[] = [];
   const urls: string[] = [];
@@ -46,7 +53,23 @@ test('guided recovery page explains, prefills, saves and refreshes without runni
     },
   };
   (globalThis as any).__paperclipPluginBridge__ = {
-    sdkUi: { useHostContext: () => ({ companyId }) },
+    sdkUi: {
+      useHostContext: () => ({ companyId }),
+      useHostLocation: () => ({ pathname }),
+      useHostNavigation: () => ({
+        resolveHref: (to: string) => `/COMPANY${to}`,
+        linkProps: (to: string) => ({ href: `/COMPANY${to}` }),
+      }),
+      usePluginData: (key: string) => {
+        assert.equal(key, 'recovery-page-settings');
+        return {
+          loading: settingsLoading,
+          error: settingsError ? { message: 'private diagnostics' } : null,
+          data: { showRecoveryPage: config.showRecoveryPage !== false },
+          refresh: refreshSettings,
+        };
+      },
+    },
   };
   globalThis.fetch = async (path, init) => {
     const url = String(path);
@@ -71,7 +94,7 @@ test('guided recovery page explains, prefills, saves and refreshes without runni
     if (url.includes('/environment-leases/')) return Response.json(lease);
     return Response.json(pending ? [lease] : []);
   };
-  const { RecoveryPage } = await import('../src/ui/index.js');
+  const { RecoveryPage, RecoveryLink } = await import('../src/ui/index.js');
   const render = async () => {
     await act(async () => {
       root.render(createElement(RecoveryPage));
@@ -218,6 +241,87 @@ test('guided recovery page explains, prefills, saves and refreshes without runni
         await render();
         assert.match(container.textContent!, /Select a company/);
         assert.equal(container.querySelector('form'), null);
+      },
+    );
+
+    await t.test(
+      'disabled page does not load leases and explains how to enable it',
+      async () => {
+        companyId = 'company';
+        config.showRecoveryPage = false;
+        const requests = urls.length;
+        await render();
+        assert.match(container.textContent!, /disabled for this company/);
+        assert.match(container.textContent!, /Show OpenShell recovery page/);
+        assert.equal(container.querySelector('form'), null);
+        assert.equal(urls.length, requests);
+      },
+    );
+
+    await t.test(
+      'page waits for visibility settings and offers retry on failure',
+      async () => {
+        const requests = urls.length;
+        settingsLoading = true;
+        await render();
+        assert.match(container.textContent!, /Loading recovery page settings/);
+        settingsLoading = false;
+        settingsError = true;
+        await render();
+        assert.match(
+          container.querySelector('[role=alert]')!.textContent!,
+          /settings could not be loaded/,
+        );
+        assert.doesNotMatch(container.textContent!, /private diagnostics/);
+        await click('Try again');
+        assert.equal(settingsRefreshes, 1);
+        assert.equal(urls.length, requests);
+        settingsError = false;
+      },
+    );
+
+    await t.test(
+      'sidebar matches native navigation with an icon, accessible label and active state',
+      async () => {
+        delete config.showRecoveryPage;
+        await act(async () => root.render(createElement(RecoveryLink)));
+        const link = container.querySelector('a')!;
+        assert.equal(link.textContent, 'OpenShell recovery');
+        assert.equal(link.getAttribute('href'), '/COMPANY/openshell-recovery');
+        assert.equal(link.getAttribute('aria-current'), 'page');
+        assert.equal(
+          link.querySelector('svg')!.getAttribute('aria-hidden'),
+          'true',
+        );
+        pathname = '/COMPANY/dashboard';
+        await act(async () => root.render(createElement(RecoveryLink)));
+        assert.equal(
+          container.querySelector('a')!.getAttribute('aria-current'),
+          null,
+        );
+        dom.window.dispatchEvent(new dom.window.Event('focus'));
+        assert.equal(settingsRefreshes, 2);
+      },
+    );
+
+    await t.test(
+      'sidebar hides when disabled, loading, unavailable or outside a company',
+      async () => {
+        config.showRecoveryPage = false;
+        await act(async () => root.render(createElement(RecoveryLink)));
+        assert.equal(container.querySelector('a'), null);
+        config.showRecoveryPage = true;
+        settingsLoading = true;
+        await act(async () => root.render(createElement(RecoveryLink)));
+        assert.equal(container.querySelector('a'), null);
+        settingsLoading = false;
+        settingsError = true;
+        await act(async () => root.render(createElement(RecoveryLink)));
+        assert.equal(container.querySelector('a'), null);
+        settingsError = false;
+        companyId = null;
+        await act(async () => root.render(createElement(RecoveryLink)));
+        assert.equal(container.querySelector('a'), null);
       },
     );
   } finally {

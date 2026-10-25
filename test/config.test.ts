@@ -4,6 +4,56 @@ import { configSchema, parseConfig } from '../src/config.js';
 import { createPlugin } from '../src/plugin.js';
 import { parseCleanupRecovery } from '../src/recovery.js';
 import { config } from './helpers.js';
+import { createTestHarness } from '@paperclipai/plugin-sdk/testing';
+import manifest from '../src/manifest.js';
+
+test('recovery page visibility defaults on and validates boolean settings', async () => {
+  for (const showRecoveryPage of [undefined, true, false]) {
+    const config = showRecoveryPage === undefined ? {} : { showRecoveryPage };
+    assert.deepEqual(parseCleanupRecovery(config), []);
+    assert.equal(
+      (await createPlugin().definition.onValidateConfig!(config)).ok,
+      true,
+    );
+  }
+  for (const showRecoveryPage of ['false', null, 0, {}]) {
+    assert.throws(
+      () => parseCleanupRecovery({ showRecoveryPage }),
+      /showRecoveryPage/,
+    );
+    assert.equal(
+      (await createPlugin().definition.onValidateConfig!({ showRecoveryPage }))
+        .ok,
+      false,
+    );
+  }
+});
+
+test('page settings handler reads company config and returns only visibility', async () => {
+  const harness = createTestHarness({ manifest });
+  const companies: (string | undefined)[] = [];
+  harness.ctx.config.get = async (companyId) => {
+    companies.push(companyId);
+    return companyId === 'hidden'
+      ? { showRecoveryPage: false, cleanupRecovery: [{ private: 'value' }] }
+      : {};
+  };
+  const plugin = createPlugin();
+  await plugin.definition.setup!(harness.ctx);
+  assert.deepEqual(
+    await harness.getData('recovery-page-settings', { companyId: 'visible' }),
+    { showRecoveryPage: true },
+  );
+  assert.deepEqual(
+    await harness.getData('recovery-page-settings', { companyId: 'hidden' }),
+    { showRecoveryPage: false },
+  );
+  assert.deepEqual(await harness.getData('recovery-page-settings'), {
+    showRecoveryPage: false,
+  });
+  assert.deepEqual(companies, ['visible', 'hidden']);
+});
+
 test('configuration defaults and required fields', () => {
   assert.deepEqual(parseConfig({ gateway: 'g', image: 'i' }), {
     executable: 'openshell',

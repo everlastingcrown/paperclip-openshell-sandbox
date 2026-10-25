@@ -10,6 +10,11 @@ export interface CleanupRecovery {
 export function parseCleanupRecovery(
   config: Record<string, unknown>,
 ): CleanupRecovery[] {
+  if (
+    config.showRecoveryPage !== undefined &&
+    typeof config.showRecoveryPage !== 'boolean'
+  )
+    throw new Error('Invalid showRecoveryPage (expected a boolean)');
   const entries = config.cleanupRecovery ?? [];
   if (!Array.isArray(entries)) throw new Error('Invalid cleanupRecovery');
   const environments = new Set<string>();
@@ -69,6 +74,13 @@ export const recoveryConfigSchema = {
   type: 'object',
   additionalProperties: false,
   properties: {
+    showRecoveryPage: {
+      type: 'boolean',
+      title: 'Show OpenShell recovery page',
+      default: true,
+      description:
+        'Show the recovery page and its sidebar link for this company. Turning this off does not affect automatic cleanup or saved recovery entries.',
+    },
     cleanupRecovery: {
       type: 'array',
       title: 'Cleanup recovery entries',

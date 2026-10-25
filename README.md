@@ -267,6 +267,8 @@ To debug, find the acquisition attempt/environment ID in the Paperclip plugin lo
 
 Open **OpenShell recovery** in Paperclip's sidebar to review this company's pending cleanup records. Select an environment to fill in its original gateway and workspace from saved lease information. If the worker's configuration directory moved, enter its new absolute path (the parent of the `openshell` directory), then choose **Save recovery settings**. Saving requires an instance administrator and enabled plugin management.
 
+The plugin setting **Show OpenShell recovery page** (`showRecoveryPage`, enabled by default) controls the page and sidebar link for the selected company. Turn it off to hide the link and disable the guided page. Automatic cleanup and saved recovery entries continue to work. Visibility updates when navigating or returning focus to Paperclip.
+
 Saving updates recovery settings for Paperclip's next automatic cleanup attempt; it does not trigger immediate cleanup or delete the environment. Use **Refresh status** later to reload Paperclip's saved cleanup status. Retries may be delayed. A gateway outage still needs to be fixed before cleanup can succeed.
 
 The **Advanced: creation was rejected** section appears only when the record contains an identified creation attempt. Confirm it only after gateway or CLI evidence proves that exact attempt was rejected before allocation. A timeout or an absent sandbox is insufficient evidence. Normal retries need no such confirmation.

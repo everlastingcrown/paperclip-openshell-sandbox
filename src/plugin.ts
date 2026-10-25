@@ -46,6 +46,13 @@ export function createPlugin(provider = new OpenShellProvider()) {
       onOutput = (stream, chunk) => ctx.execution.log(stream, chunk);
       provider.setPluginConfig((companyId) => ctx.config.get(companyId));
       provider.setLogger(ctx.logger);
+      ctx.data.register('recovery-page-settings', async (params) => {
+        const companyId =
+          typeof params.companyId === 'string' ? params.companyId : undefined;
+        if (!companyId) return { showRecoveryPage: false };
+        const config = await ctx.config.get(companyId);
+        return { showRecoveryPage: config.showRecoveryPage !== false };
+      });
     },
     onShutdown: () => provider.shutdown(),
     onDuplexChannelOpen: (p) => provider.duplex.open(p),

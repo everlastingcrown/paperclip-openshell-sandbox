@@ -78,6 +78,7 @@ test('plugin recovery repairs saved cleanup config without changing environment 
   let settings: Record<string, unknown> = {};
   const companies: string[] = [];
   await plugin.definition.setup({
+    data: { register() {} },
     logger: { info() {}, debug() {}, warn() {}, error() {} },
     config: {
       async get(companyId: string) {
