@@ -1,6 +1,10 @@
 import type { Environment, EnvironmentLease } from '@paperclipai/shared';
 import { pluginId } from '../plugin-id.js';
-import { parseCleanupRecovery, type CleanupRecovery } from '../recovery.js';
+import {
+  cleanupConnection,
+  parseCleanupRecovery,
+  type CleanupRecovery,
+} from '../recovery.js';
 import { isAttemptId } from '../validation.js';
 
 export type PendingRecovery = {
@@ -31,44 +35,26 @@ export function isOurLease(
   );
 }
 
-function text(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
-
 export function recoveryDraft(
   pending: PendingRecovery,
   config: Record<string, unknown>,
 ): CleanupRecovery {
   const { environment, lease } = pending;
   const metadata = record(lease.metadata);
-  const saved = record(metadata.openshell);
   const existing = parseCleanupRecovery(config).find(
     (entry) => entry.environmentId === environment.id,
   );
-  // Match cleanupConfig's immutable lease scope before considering fallback config.
-  const source = saved.gateway
-    ? saved
-    : metadata.gateway
-      ? metadata
-      : environment.config;
-  const gateway =
-    text(source.gateway) ||
-    text(environment.config.gateway) ||
-    existing?.gateway ||
-    '';
-  const workspace = source.gateway
-    ? text(source.workspace) || 'default'
-    : existing?.workspace || 'default';
-  const matching =
-    existing?.gateway === gateway && existing.workspace === workspace
-      ? existing
-      : undefined;
+  const { c, recovery } = cleanupConnection(
+    metadata,
+    environment.config,
+    existing,
+  );
   return {
     environmentId: environment.id,
-    gateway,
-    workspace,
-    configHome: matching?.configHome ?? (text(source.configHome) || undefined),
-    rejectedAttemptIds: matching?.rejectedAttemptIds ?? [],
+    gateway: c.gateway,
+    workspace: c.workspace,
+    configHome: c.configHome,
+    rejectedAttemptIds: recovery?.rejectedAttemptIds ?? [],
   };
 }
 

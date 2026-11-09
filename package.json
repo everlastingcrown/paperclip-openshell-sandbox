@@ -53,14 +53,14 @@
     "prepublishOnly": "pnpm build"
   },
   "peerDependencies": {
-    "@paperclipai/plugin-sdk": "2026.1005.0"
+    "@paperclipai/plugin-sdk": "2026.1106.0"
   },
   "devDependencies": {
     "@commitlint/cli": "21.2.3",
     "@commitlint/config-conventional": "21.2.3",
     "@eslint/js": "^10.0.1",
-    "@paperclipai/plugin-sdk": "2026.1005.0",
-    "@paperclipai/shared": "2026.1005.0",
+    "@paperclipai/plugin-sdk": "2026.1106.0",
+    "@paperclipai/shared": "2026.1106.0",
     "@types/node": "24.10.1",
     "@types/react": "19.2.18",
     "conventional-changelog-conventionalcommits": "9.3.1",

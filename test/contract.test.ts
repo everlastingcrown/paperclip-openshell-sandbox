@@ -45,7 +45,7 @@ test('real worker advertises every declared lifecycle capability and stop-only h
           manifest,
           config: {},
           apiVersion: 1,
-          instanceInfo: { instanceId: 'test', hostVersion: '2026.1005.0' },
+          instanceInfo: { instanceId: 'test', hostVersion: '2026.1106.0' },
         },
       }) + '\n',
     );
@@ -65,6 +65,7 @@ test('real worker advertises every declared lifecycle capability and stop-only h
       'environmentResumeLease',
       'environmentReleaseLease',
       'environmentDestroyLease',
+      'environmentInspectLease',
       'environmentStopLease',
       'environmentExecute',
       'environmentRealizeWorkspace',
@@ -88,6 +89,9 @@ test('real SDK routes interleaved output before concurrent execute replies', asy
     import { createPlugin } from './src/plugin.ts';
     import { OpenShellProvider } from './src/provider.ts';
     class StreamingProvider extends OpenShellProvider {
+      async inspect(p) {
+        return { providerLeaseId: p.providerLeaseId, state: 'stopped' };
+      }
       async execute(p, output) {
         output('stdout', p.command);
         await new Promise(resolve => setTimeout(resolve, p.command === 'first' ? 40 : 5));
@@ -138,7 +142,7 @@ test('real SDK routes interleaved output before concurrent execute replies', asy
       manifest,
       config: {},
       apiVersion: 1,
-      instanceInfo: { instanceId: 'test', hostVersion: '2026.1005.0' },
+      instanceInfo: { instanceId: 'test', hostVersion: '2026.1106.0' },
     });
     await initialized;
     const completed = new Promise<void>((resolve, reject) => {
@@ -196,6 +200,27 @@ test('real SDK routes interleaved output before concurrent execute replies', asy
           messages.findIndex((m) => m.id === (command === 'first' ? 2 : 3)),
       );
     }
+    const inspected = new Promise<any>((resolve) => {
+      const onLine = (line: string) => {
+        const message = JSON.parse(line);
+        if (message.id === 4) {
+          lines.off('line', onLine);
+          resolve(message);
+        }
+      };
+      lines.on('line', onLine);
+    });
+    send(4, 'environmentInspectLease', {
+      driverKey: 'openshell',
+      companyId: 'company',
+      environmentId: 'env',
+      config: {},
+      providerLeaseId: 'exact-allocation',
+    });
+    assert.deepEqual((await inspected).result, {
+      providerLeaseId: 'exact-allocation',
+      state: 'stopped',
+    });
   } finally {
     clearTimeout(timer);
     lines.close();
@@ -252,7 +277,7 @@ test('real SDK duplex RPC binds byte notifications, route-only close and exit ex
       manifest,
       config: {},
       apiVersion: 1,
-      instanceInfo: { instanceId: 'test', hostVersion: '2026.1005.0' },
+      instanceInfo: { instanceId: 'test', hostVersion: '2026.1106.0' },
     });
     const base = {
       driverKey: 'openshell',

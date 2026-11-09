@@ -1,6 +1,6 @@
 # OpenShell sandbox provider for Paperclip
 
-A small CLI bridge for Paperclip **2026.1005.0** and OpenShell **0.1.2**. It creates a sandbox, prepares a workspace, runs commands, and stops or deletes the sandbox. Paperclip handles workspace transfer using its tar/base64 fallback.
+A small CLI bridge for Paperclip **2026.1106.0** and OpenShell **0.1.7**. It creates a sandbox, prepares a workspace, runs commands, and stops or deletes the sandbox. Paperclip handles workspace transfer using its tar/base64 fallback.
 
 Install the package in Paperclip and enable its `openshell` sandbox driver. The Paperclip worker needs Node >=24.11.0 and an installed `openshell` CLI. Register and authenticate the gateway in the worker's OpenShell configuration directory before testing.
 
@@ -17,7 +17,7 @@ Configure the workload directly in OpenShell using a named template. In the Pape
 
 `configHome` is the parent of the `openshell` configuration directory (the CLI's `XDG_CONFIG_HOME`). Omit it when the worker already inherits the correct directory. The CLI subprocess uses the selected gateway and workspace explicitly; it removes `OPENSHELL_GATEWAY_ENDPOINT` to avoid overriding that selection.
 
-Templates specify the workload image, resources, driver configuration and environment in OpenShell. OpenShell 0.1.2's CLI supplies sandbox policy and credential-provider bindings separately: use an authored policy file and names of providers already configured and authenticated in OpenShell. The plugin does not author policy or create credential providers.
+Templates specify the workload image, resources, driver configuration and environment in OpenShell. OpenShell 0.1.7's CLI supplies sandbox policy and credential-provider bindings separately: use an authored policy file and names of providers already configured and authenticated in OpenShell. The plugin does not author policy or create credential providers.
 
 ```json
 {
@@ -59,13 +59,13 @@ Paperclip-owned and future configuration fields are accepted and preserved. Only
 
 ## Multiline task environment values
 
-OpenShell 0.1.2 rejects carriage returns and newlines in `sandbox exec --env` values. The provider transports multiline task values as base64 in a shell wrapper, restores them inside the sandbox, and replaces the wrapper with the requested command. This preserves trailing newlines, argument boundaries and stdin; ordinary values still use `--env`.
+OpenShell 0.1.7 rejects carriage returns and newlines in `sandbox exec --env` values. The provider transports multiline task values as base64 in a shell wrapper, restores them inside the sandbox, and replaces the wrapper with the requested command. This preserves trailing newlines, argument boundaries and stdin; ordinary values still use `--env`.
 
 With an older plugin, this can surface as `Failed to install the adapter runtime command` even when the image already contains the CLI: Paperclip's availability check and install attempt both receive the rejected environment. Update the plugin and reload its worker. No harness image change is needed for this transport error.
 
 ## Image environment variables missing in tasks
 
-OpenShell 0.1.2 starts the sandbox's initial process with the image environment, but rebuilds the environment for subsequent `sandbox exec` commands. Dockerfile `ENV` values such as `JAVA_HOME`, `ANDROID_HOME`, and `PLAYWRIGHT_BROWSERS_PATH` are not automatically inherited by those commands. The exec environment includes selected defaults (including `PATH`), explicitly configured template environment variables, provider variables, and command overrides.
+OpenShell 0.1.7 starts the sandbox's initial process with the image environment, but rebuilds the environment for subsequent `sandbox exec` commands. Dockerfile `ENV` values such as `JAVA_HOME`, `ANDROID_HOME`, and `PLAYWRIGHT_BROWSERS_PATH` are not automatically inherited by those commands. The exec environment includes selected defaults (including `PATH`), explicitly configured template environment variables, provider variables, and command overrides.
 
 This provider keeps an initial process running and launches Paperclip task commands through `sandbox exec --no-tty --no-login-shell`. Consequently, variables visible after an interactive `openshell sandbox create` can be absent from Paperclip tasks using the same image and policy. Removing `--no-login-shell` only enables shell startup files; it does not restore Dockerfile `ENV` inheritance.
 
@@ -98,14 +98,14 @@ openshell --gateway my-gateway --workspace default sandbox exec \
 The provider supports Paperclip's existing duplex command channel through one
 persistent noninteractive SSH command. Ordinary executions and native live output
 streaming keep their current behavior. The worker needs OpenSSH (`sshExecutable`,
-default `ssh`) as well as OpenShell 0.1.2. Install the provider with the environment
+default `ssh`) as well as OpenShell 0.1.7. Install the provider with the environment
 option **off until controlled live acceptance succeeds**. Live exec-reduction
 measurements are outstanding; mocked and RPC tests do not establish live coverage.
 
 Two independent settings control new runs. The environment editor's **Enable
 duplex callback bridge** checkbox (`enableDuplex`, default false) stays editable.
 It requires an instance admin to enable `enableSandboxDuplexBridge` through the
-existing instance API; Paperclip v2026.1005.0 has no corresponding admin UI switch.
+existing instance API; Paperclip v2026.1106.0 has no corresponding admin UI switch.
 The plugin never reads or modifies that instance setting.
 
 As an instance admin signed in to your Paperclip instance, run this in its browser
@@ -179,7 +179,7 @@ destroy and shutdown invalidate the saved lease and close its channels. After a
 worker restart, resume or execute with verified lease metadata before opening.
 
 The transport uses the pinned CLI's
-[name-mode SSH proxy](https://github.com/NVIDIA/OpenShell/blob/v0.1.2/crates/openshell-cli/src/ssh.rs),
+[name-mode SSH proxy](https://github.com/NVIDIA/OpenShell/blob/v0.1.7/crates/openshell-cli/src/ssh.rs),
 with explicit gateway/workspace and `XDG_CONFIG_HOME`. The CLI resolves local
 gateway credentials and creates a fresh SSH session per proxy invocation; the
 plugin does not store session tokens. SSH host-key checks match OpenShell's
@@ -255,9 +255,17 @@ can add further sandbox work; this change does not suppress security audit logs.
 
 The draft probe checks gateway access without allocating anything. Paperclip's **Test Provider** creates a fresh sandbox with `reuseLease: false`, then releases it. This provider deletes test sandboxes, including those with Paperclip's `archiveOnRelease` flag.
 
-If acquisition fails after creation, cleanup gets a fresh budget of up to 30 seconds, separate from the failed command. Cleanup retries up to three times, verifies ownership before deletion, and confirms absence. Ordinary destruction uses the same routine and is idempotent for an already deleted sandbox. Stop and `stop_and_retain` confirm the stopped state and preserve files.
+If acquisition fails after creation, cleanup gets a fresh budget of up to 30 seconds, separate from the failed command. Ordinary destruction uses the same routine and is idempotent for an already deleted sandbox. Stop and `stop_and_retain` require the confirmed `Stopped` state and preserve files; a successful CLI exit alone is insufficient.
 
-Cleanup of a saved lease uses its recorded gateway, workspace, executable and config directory. Changed images, removed templates, unreadable policy files, invalid runtime fields, or unavailable plugin configuration cannot block this path. Existing leases keep their ownership metadata format.
+Recovery lookups and lifecycle control commands retry recognized connection failures, gateway unavailability, throttling, and timeouts up to three attempts, with 250 ms and 500 ms backoff within the operation budget. Each CLI invocation uses at most 10 seconds or half the remaining budget, reserving time for confirmation. Authentication, TLS, configuration, malformed response, ownership, and unknown failures require correction before retrying. An interrupted paginated lookup restarts from its first page. After an ambiguous start, resume, stop, or delete failure, the provider checks the allocation's identity and current state before repeating the command. Create and workload execution are never replayed automatically.
+
+Lease resume starts a verified `Stopped` sandbox, resumes a verified `Suspended` sandbox, and confirms readiness. Temporary gateway failures leave recovery to Paperclip using the recorded allocation. Unknown or error states never authorize automatic replacement.
+
+Cleanup selects a complete connection from the saved `openshell` lease metadata, then Paperclip's saved top-level connection metadata, then the environment's recovery entry, then its current configuration. It never combines an edited gateway with an old workspace or credential directory. A recovery entry matching the original gateway/workspace can override `configHome`. Malformed saved connections fail before CLI calls. Changed images, removed templates, unreadable policy files, invalid runtime fields, or unavailable plugin configuration cannot block cleanup using a valid saved connection. Existing leases keep their ownership metadata format.
+
+Paperclip can use the SDK's read-only lease inspection hook to observe the original allocation without starting or reconnecting it. Verified `Ready` and `Stopped` phases report active and stopped respectively; other present phases report unknown. Confirmed absence reports destroyed only when an allocation ID was previously verified. An uncertain create without an observed ID remains unknown. Inspection does not populate the worker's executable lease registry or persist a new cleanup identity.
+
+Local duplex teardown attempts every matching route within its existing shutdown bounds. Local channel failures are logged without raw exceptions and do not prevent provider stop or deletion; closing a local channel is never proof of remote termination.
 
 A gateway outage can prevent deletion. An interrupted create can also finish remotely after the CLI exits. In these cases the provider reports structured cleanup evidence; Paperclip records `pending_cleanup` and retries. It never reports a sandbox destroyed without confirmation. Once deletion is confirmed, Paperclip can expire the cleanup lease. The plugin cannot reset Paperclip database/UI state itself.
 

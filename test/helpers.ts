@@ -77,6 +77,7 @@ export function fake(
     if (operation === 'delete') record = undefined;
     if (operation === 'stop' && record) record.phase = 'Stopped';
     if (operation === 'start' && record) record.phase = 'Ready';
+    if (operation === 'resume' && record) record.phase = 'Ready';
     return ok();
   };
   const provider = new OpenShellProvider(runner, 1);

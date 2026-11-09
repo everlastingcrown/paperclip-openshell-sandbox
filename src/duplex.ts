@@ -444,24 +444,38 @@ export class DuplexChannels {
             resolve();
           });
         });
-      r.child.stdin.end();
-      await wait(duplexLimits.gracefulMs);
-      if (r.exited) return;
-      this.kill(r, 'SIGTERM');
-      await wait(duplexLimits.terminateMs);
-      if (r.exited) return;
-      this.kill(r, 'SIGKILL');
-      await wait(duplexLimits.forceMs);
-      r.child.stdin.destroy();
-      r.child.stdout.destroy();
-      r.child.stderr.destroy();
-      this.exit(r, null, true);
+      try {
+        r.child.stdin.end();
+        await wait(duplexLimits.gracefulMs);
+        if (r.exited) return;
+        this.kill(r, 'SIGTERM');
+        await wait(duplexLimits.terminateMs);
+        if (r.exited) return;
+        this.kill(r, 'SIGKILL');
+        await wait(duplexLimits.forceMs);
+      } catch {
+        log(
+          this.logger,
+          'warn',
+          'OpenShell local channel teardown failed',
+          this.pair(r),
+        );
+      } finally {
+        this.exit(r, null, true);
+        for (const stream of [r.child.stdin, r.child.stdout, r.child.stderr]) {
+          try {
+            stream.destroy();
+          } catch {
+            /* continue closing other streams */
+          }
+        }
+      }
     })();
     await r.closing;
     return this.pair(r);
   }
   async invalidate(key: string) {
-    await Promise.all(
+    await Promise.allSettled(
       [...this.routes.values()]
         .filter((r) => r.leaseKey === key)
         .map((r) => this.closeRoute(r)),
@@ -469,7 +483,7 @@ export class DuplexChannels {
   }
   async shutdown() {
     this.stopped = true;
-    await Promise.all(
+    await Promise.allSettled(
       [...this.routes.keys()].map((hostRouteId) => this.close({ hostRouteId })),
     );
   }

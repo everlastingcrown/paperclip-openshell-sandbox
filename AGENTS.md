@@ -2,7 +2,7 @@
 
 ## Architecture and layout
 
-This ESM TypeScript package registers Paperclip's `openshell` sandbox driver. It targets Paperclip/plugin-sdk **2026.1005.0**, OpenShell CLI **0.1.2**, and Node **>=24.11.0**. The worker invokes an installed CLI; operators supply runtime images and authenticated credential providers.
+This ESM TypeScript package registers Paperclip's `openshell` sandbox driver. It targets Paperclip/plugin-sdk **2026.1106.0**, OpenShell CLI **0.1.7**, and Node **>=24.11.0**. The worker invokes an installed CLI; operators supply runtime images and authenticated credential providers.
 
 - `src/plugin.ts`: SDK hooks; `src/worker.ts`: worker startup; `src/index.ts`: public exports.
 - `src/provider.ts`: SDK orchestration, reuse, stop/destroy/reconciliation, workspace realization, and execution.
@@ -34,7 +34,7 @@ pnpm check:package
 
 Ordinary tests need no gateway. Build before `check:package`, which installs the packed tarball into a temporary consumer using `--prefer-offline` (missing registry metadata/packages may require network access) and checks exports, types, worker startup, and version consistency. Typechecking covers `src/`; tests execute through `tsx`.
 
-Live verification requires `OPENSHELL_SMOKE_CONFIG` (absolute JSON config path) and `PAPERCLIP_SOURCE` (installed clean Paperclip checkout at `v2026.1005.0`), then `pnpm test:live`. It creates and destroys a real sandbox and exercises host sync fallbacks. Missing variables produce `SKIP`; report live coverage separately.
+Live verification requires `OPENSHELL_SMOKE_CONFIG` (absolute JSON config path) and `PAPERCLIP_SOURCE` (installed clean Paperclip checkout at `v2026.1106.0`), then `pnpm test:live`. It creates and destroys a real sandbox and exercises host sync fallbacks. Missing variables produce `SKIP`; report live coverage separately.
 
 PR and release validation both run ESLint. Husky formats/fixes staged files before commits, enforces Conventional Commits, and runs tests before pushes. `fix:`/`feat:`/breaking changes drive releases. `main` publishes stable versions; `canary` publishes prereleases. Release preparation rebuilds and validates after version assignment.
 
@@ -44,6 +44,7 @@ PR and release validation both run ESLint. Husky formats/fixes staged files befo
 - Creation outcome is tracked independently of errors. Only the create invocation can establish definitive rejection; readiness/runtime failures after creation must clean up or return structured reconciliation evidence. Persist verified IDs and keep cleanup independent of current runtime configuration.
 - Reject exhausted deadlines before any runner call. Keep a fresh bounded cleanup budget after acquisition failure. Tests can inject the internal client clock without changing the public provider constructor.
 - Complete and validate every list page before returning a match or confirming absence. Duplicate matches, repeated tokens, malformed later pages, and pagination-limit exhaustion fail closed.
+- Recovery retries only recognized transient failures within the original deadline; re-inspect ownership and state before replaying lifecycle controls. Never replay create or workload execution. Read-only lease inspection must not start a sandbox or admit duplex execution.
 - Verify allocation ID and ownership labels before control operations. Preserve structured creation-cleanup errors and reconciliation behavior; uncertain allocation absence must not silently count as successful cleanup.
 - Stop and `stop_and_retain` must confirm `Stopped` and preserve files, including ephemeral leases. Never substitute deletion for a failed stop. Provider-enforced lease expiry is unsupported and rejected before allocation.
 - Sandbox names must fit OpenShell's 19-character limit. The remote workspace is `/sandbox/paperclip-workspace`; images need the tools declared in `src/config.ts` and a persistent main process. `curlimages/curl` is unsuitable.

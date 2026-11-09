@@ -9,7 +9,7 @@ const manifest: PaperclipPluginManifestV1 = {
   apiVersion: 1,
   version,
   displayName: 'OpenShell Sandbox Provider',
-  description: 'Host CLI integration for OpenShell v0.1.2',
+  description: 'Host CLI integration for OpenShell v0.1.7',
   author: 'everlastingcrown',
   categories: ['workspace'],
   capabilities: [

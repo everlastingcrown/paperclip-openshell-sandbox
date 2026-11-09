@@ -86,6 +86,8 @@ export function createPlugin(provider = new OpenShellProvider()) {
       control('release', p, () => provider.release(p)),
     onEnvironmentDestroyLease: (p) =>
       control('destroy', p, () => provider.destroy(p)),
+    onEnvironmentInspectLease: (p) =>
+      control('inspect', p, () => provider.inspect(p)),
     onEnvironmentStopLease: (p) => control('stop', p, () => provider.stop(p)),
     onEnvironmentRealizeWorkspace: (p) =>
       control('realize', p, () => provider.realize(p)),

@@ -24,6 +24,63 @@ const request = {
   command: ['cat'],
 };
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+test('one broken local stream cannot prevent other routes or provider termination', async () => {
+  const f = fake();
+  const l = await f.provider.acquire(f.params);
+  const c = parseConfig(f.params.config);
+  const i = identity(f.params, l.providerLeaseId, l.metadata, c);
+  const children: any[] = [];
+  const exits: string[] = [];
+  const messages: unknown[] = [];
+  const channels = new DuplexChannels(
+    async () => ({ c, i, valid: () => true }),
+    () => {
+      const child: any = new EventEmitter();
+      child.stdin = new PassThrough();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = () => child.emit('close', null, 'SIGKILL');
+      child.stdin.on('finish', () => child.emit('close', 0, null));
+      if (!children.length)
+        child.stdin.end = () => {
+          throw new Error('private-token');
+        };
+      children.push(child);
+      queueMicrotask(() => child.emit('spawn'));
+      return child;
+    },
+  );
+  channels.logger = {
+    info() {},
+    debug() {},
+    warn: (_message, fields) => {
+      messages.push(fields);
+    },
+    error() {},
+  };
+  channels.notifications = {
+    data() {},
+    exit: (route) => {
+      exits.push(route);
+    },
+  };
+  await channels.open({ ...request, hostRouteId: 'broken' });
+  await channels.open({ ...request, hostRouteId: 'healthy' });
+  // Exercise the real route invalidation through provider destruction.
+  f.provider.duplex.invalidate = (key) => channels.invalidate(key);
+  assert.equal((await f.provider.destroy(release(f, l))).state, 'destroyed');
+  assert.deepEqual(exits.sort(), ['broken', 'healthy']);
+  assert.ok(
+    children.every(
+      (child) =>
+        child.stdin.destroyed &&
+        child.stdout.destroyed &&
+        child.stderr.destroyed,
+    ),
+  );
+  assert.equal(messages.length, 1);
+  assert.ok(!JSON.stringify(messages).includes('private-token'));
+});
 function fixture(
   options: { blocked?: boolean; early?: boolean; spawnError?: boolean } = {},
 ) {

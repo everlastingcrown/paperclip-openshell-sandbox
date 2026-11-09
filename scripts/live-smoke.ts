@@ -9,10 +9,10 @@ import { parseConfig } from '../src/config.js';
 import { run } from '../src/cli.js';
 import { encodeChannelBytes } from '@paperclipai/plugin-sdk';
 const duplexMode = process.argv.includes('--duplex');
-// Uses the real host fallback from an installed v2026.1005.0 checkout.
+// Uses the real host fallback from an installed v2026.1106.0 checkout.
 if (!process.env.OPENSHELL_SMOKE_CONFIG || !process.env.PAPERCLIP_SOURCE) {
   console.log(
-    'SKIP: set OPENSHELL_SMOKE_CONFIG (JSON file path) and PAPERCLIP_SOURCE (installed v2026.1005.0 checkout).',
+    'SKIP: set OPENSHELL_SMOKE_CONFIG (JSON file path) and PAPERCLIP_SOURCE (installed v2026.1106.0 checkout).',
   );
   process.exit(0);
 }
@@ -22,7 +22,7 @@ assert.equal(
     cwd: source,
     encoding: 'utf8',
   }).trim(),
-  'v2026.1005.0',
+  'v2026.1106.0',
 );
 assert.equal(
   execFileSync(

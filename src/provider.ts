@@ -10,6 +10,8 @@ import {
   type PluginEnvironmentTerminationReceipt,
   type PluginEnvironmentProbeParams,
   type PluginEnvironmentProbeResult,
+  type PluginEnvironmentInspectLeaseParams,
+  type PluginEnvironmentLeaseObservation,
   type PluginLogger,
 } from '@paperclipai/plugin-sdk';
 import {
@@ -29,7 +31,12 @@ import {
   legacyName,
   cleanupIdentity,
 } from './identity.js';
-import { parseCleanupRecovery, type CleanupRecovery } from './recovery.js';
+import {
+  cleanupConnection,
+  hasSavedConnection,
+  parseCleanupRecovery,
+  type CleanupRecovery,
+} from './recovery.js';
 import { SandboxClient, validateExecution } from './sandbox-client.js';
 import { acquire } from './acquisition.js';
 import { remaining } from './deadline.js';
@@ -114,7 +121,14 @@ export class OpenShellProvider {
       if (token.key === key || (!token.key && token.scope === this.scopeKey(p)))
         token.valid = false;
     this.leases.delete(key);
-    await this.duplex.invalidate(key);
+    try {
+      await this.duplex.invalidate(key);
+    } catch {
+      log(this.logger, 'warn', 'OpenShell local channel teardown failed', {
+        companyId: p.companyId,
+        environmentId: p.environmentId,
+      });
+    }
   }
   async shutdown() {
     this.shuttingDown = true;
@@ -204,18 +218,13 @@ export class OpenShellProvider {
   }
   private async cleanupConfig(p: Release) {
     if (p.driverKey !== 'openshell') throw new Error('Unsupported driver key');
-    const metadata = p.leaseMetadata?.openshell;
-    const saved =
-      metadata && typeof metadata === 'object' && !Array.isArray(metadata)
-        ? (metadata as Record<string, unknown>)
-        : {};
     let entries: CleanupRecovery[] = [];
     try {
       entries = this.cleanupRecovery
         ? await this.cleanupRecovery(p.companyId)
         : parseCleanupRecovery((await this.pluginConfig?.(p.companyId)) ?? {});
     } catch (error) {
-      if (!saved.gateway) throw error;
+      if (!hasSavedConnection(p.leaseMetadata)) throw error;
       log(
         this.logger,
         'warn',
@@ -229,32 +238,18 @@ export class OpenShellProvider {
     const scopeRecovery = entries.find(
       (entry) => entry.environmentId === p.environmentId,
     );
-    // Persisted lease connection settings are independent of current runtime edits.
-    const c = parseConfig({
-      gateway: saved.gateway ?? p.config.gateway ?? scopeRecovery?.gateway,
-      workspace: saved.gateway
-        ? saved.workspace
-        : (p.config.workspace ?? scopeRecovery?.workspace),
-      executable: saved.gateway ? saved.executable : p.config.executable,
-      configHome: saved.gateway
-        ? saved.configHome
-        : (scopeRecovery?.configHome ?? p.config.configHome),
-      image: 'cleanup',
-      timeoutMs:
-        typeof p.config.timeoutMs === 'number' &&
-        Number.isInteger(p.config.timeoutMs) &&
-        p.config.timeoutMs >= 1000
-          ? Math.min(p.config.timeoutMs, 30_000)
-          : 30_000,
-      reuseLease: p.config.reuseLease === true,
-    });
-    const recovery = entries?.find(
-      (entry) =>
-        entry.environmentId === p.environmentId &&
-        entry.gateway === c.gateway &&
-        entry.workspace === c.workspace,
+    const { c, recovery } = cleanupConnection(
+      p.leaseMetadata,
+      p.config,
+      scopeRecovery,
     );
-    if (recovery?.configHome) c.configHome = recovery.configHome;
+    c.timeoutMs =
+      typeof p.config.timeoutMs === 'number' &&
+      Number.isInteger(p.config.timeoutMs) &&
+      p.config.timeoutMs >= 1000
+        ? Math.min(p.config.timeoutMs, 30_000)
+        : 30_000;
+    c.reuseLease = p.config.reuseLease === true;
     return { c, recovery };
   }
   async probe(
@@ -307,12 +302,10 @@ export class OpenShellProvider {
     if (!c.reuseLease || !i.reuseLease)
       return { providerLeaseId: null, metadata: { expired: true } };
     const deadline = this.client.clock.now() + c.timeoutMs;
-    const s = await this.client.inspect(c, i.name, deadline);
+    const s = await this.client.inspectRecovery(c, i.name, deadline);
     if (!s) return { providerLeaseId: null, metadata: { expired: true } };
     verify(s, i);
-    if (s.phase === 'Stopped')
-      await this.client.command(c, ['start', i.name], deadline);
-    await this.client.wait(c, i, 'Ready', deadline);
+    await this.client.transition(c, i, 'Ready', deadline);
     return lease(i);
   }
   async execute(p: Execute, onOutput?: Parameters<Runner>[5]) {
@@ -382,7 +375,7 @@ export class OpenShellProvider {
     const i = identity(p, p.providerLeaseId, p.leaseMetadata, c);
     if (i.reuseLease && c.reuseLease) {
       if (p.cancelActiveWork) return this.stop(p);
-      const s = await this.client.inspect(
+      const s = await this.client.inspectRecovery(
         c,
         i.name,
         this.client.clock.now() + c.timeoutMs,
@@ -397,12 +390,7 @@ export class OpenShellProvider {
     const { c } = await this.cleanupConfig(p);
     const i = identity(p, p.providerLeaseId, p.leaseMetadata, c);
     const deadline = this.client.clock.now() + c.timeoutMs;
-    const s = await this.client.inspect(c, i.name, deadline);
-    if (!s) throw new Error('Cannot confirm stop of missing sandbox');
-    verify(s, i);
-    if (s.phase !== 'Stopped')
-      await this.client.command(c, ['stop', i.name], deadline);
-    await this.client.wait(c, i, 'Stopped', deadline);
+    await this.client.transition(c, i, 'Stopped', deadline);
     return { providerLeaseId: p.providerLeaseId!, state: 'stopped' };
   }
   async destroy(p: Release): Promise<PluginEnvironmentTerminationReceipt> {
@@ -418,7 +406,7 @@ export class OpenShellProvider {
     const i =
       failed?.identity ?? identity(p, p.providerLeaseId, p.leaseMetadata, c);
     if (failed && !i.id) {
-      const s = await this.client.inspect(c, i.name, deadline);
+      const s = await this.client.inspectRecovery(c, i.name, deadline);
       // Versions before this fix always sent 46-character names, rejected
       // before allocation by v0.1.2's 19-character validation. A successful
       // scoped list confirms absence; these attempts cannot appear later.
@@ -447,5 +435,33 @@ export class OpenShellProvider {
     }
     await this.client.remove(c, i, deadline);
     return { providerLeaseId: p.providerLeaseId!, state: 'destroyed' };
+  }
+  async inspect(
+    p: PluginEnvironmentInspectLeaseParams,
+  ): Promise<PluginEnvironmentLeaseObservation> {
+    const { c } = await this.cleanupConfig(p);
+    const value = p.leaseMetadata?.failedCreateCleanup;
+    const i =
+      value === undefined
+        ? identity(p, p.providerLeaseId, p.leaseMetadata, c)
+        : cleanupIdentity(p, p.providerLeaseId, value, c).identity;
+    const s = await this.client.inspectRecovery(
+      c,
+      i.name,
+      this.client.clock.now() + c.timeoutMs,
+    );
+    if (s) verify(s, i);
+    return {
+      providerLeaseId: p.providerLeaseId,
+      state: !s
+        ? i.id
+          ? 'destroyed'
+          : 'unknown'
+        : s.phase === 'Stopped'
+          ? 'stopped'
+          : s.phase === 'Ready'
+            ? 'active'
+            : 'unknown',
+    };
   }
 }

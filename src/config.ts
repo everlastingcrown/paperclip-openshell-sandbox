@@ -186,7 +186,7 @@ export const configSchema = {
       'x-paperclip-advanced': true,
       'x-paperclip-group': 'Worker executables',
       description:
-        'Executable name on the worker PATH or absolute worker-local path. Leave blank to use openshell. Requires OpenShell CLI 0.1.2.',
+        'Executable name on the worker PATH or absolute worker-local path. Leave blank to use openshell. Requires OpenShell CLI 0.1.7.',
     },
     sshExecutable: {
       type: 'string',

@@ -1,10 +1,55 @@
 import { attemptPattern, isAttemptId, isScopeName } from './validation.js';
+import { parseConfig } from './config.js';
 export interface CleanupRecovery {
   environmentId: string;
   gateway: string;
   workspace: string;
   configHome?: string;
   rejectedAttemptIds: string[];
+}
+
+export function hasSavedConnection(metadata: Record<string, unknown> = {}) {
+  return metadata.openshell !== undefined || metadata.gateway !== undefined;
+}
+
+// Select one complete historical connection; never combine an edited gateway
+// with an old workspace or credential directory. Also used by the recovery UI.
+export function cleanupConnection(
+  metadata: Record<string, unknown> = {},
+  current: Record<string, unknown>,
+  recovery?: CleanupRecovery,
+) {
+  const saved = metadata.openshell;
+  if (
+    saved !== undefined &&
+    (!saved || typeof saved !== 'object' || Array.isArray(saved))
+  )
+    throw new Error('Invalid saved OpenShell connection');
+  const source =
+    saved !== undefined
+      ? (saved as Record<string, unknown>)
+      : metadata.gateway !== undefined
+        ? metadata
+        : recovery
+          ? { ...recovery }
+          : current;
+  const connection = parseConfig({
+    gateway: source.gateway,
+    workspace: source.workspace,
+    executable: source.executable,
+    configHome: source.configHome,
+    image: 'cleanup',
+  });
+  const matching =
+    recovery?.gateway === connection.gateway &&
+    recovery.workspace === connection.workspace
+      ? recovery
+      : undefined;
+  const c = parseConfig({
+    ...connection,
+    configHome: matching?.configHome ?? connection.configHome,
+  });
+  return { c, recovery: matching };
 }
 
 export function parseCleanupRecovery(

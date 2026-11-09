@@ -32,8 +32,8 @@ try {
       type: 'module',
       dependencies: {
         [pkg.name]: `file:${tarball}`,
-        '@paperclipai/plugin-sdk': '2026.1005.0',
-        '@paperclipai/shared': '2026.1005.0',
+        '@paperclipai/plugin-sdk': '2026.1106.0',
+        '@paperclipai/shared': '2026.1106.0',
       },
     }),
   );
@@ -113,10 +113,10 @@ try {
     child.once('error',reject);
     child.once('exit',()=>reject(new Error('Packed worker exited before initialization')));
   });
-  child.stdin.write(JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{manifest,config:{},apiVersion:1,instanceInfo:{instanceId:'packed-test',hostVersion:'2026.1005.0'}}})+'\\n');
+  child.stdin.write(JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{manifest,config:{},apiVersion:1,instanceInfo:{instanceId:'packed-test',hostVersion:'2026.1106.0'}}})+'\\n');
   const result = await response;
   assert.equal(result.result.ok,true);
-  for (const method of ['environmentAcquireLease','environmentResumeLease','environmentReleaseLease','environmentDestroyLease','environmentStopLease','environmentExecute']) assert.ok(result.result.supportedMethods.includes(method));
+  for (const method of ['environmentAcquireLease','environmentResumeLease','environmentReleaseLease','environmentDestroyLease','environmentStopLease','environmentInspectLease','environmentExecute']) assert.ok(result.result.supportedMethods.includes(method));
 } finally {clearTimeout(timer);lines.close();child.stdin.end();child.kill();}
 `,
   );

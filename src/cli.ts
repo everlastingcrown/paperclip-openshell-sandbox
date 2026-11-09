@@ -15,6 +15,7 @@ export class OpenShellCommandError extends Error {
   constructor(
     message: string,
     readonly allocationImpossible = false,
+    readonly retryable = false,
   ) {
     super(message);
   }
@@ -32,6 +33,8 @@ export function commandFailure(
     .replace(/\s+/g, ' ');
   let reason = 'check gateway authentication, policy and CLI compatibility';
   let allocationImpossible = false;
+  let retryable = false;
+  let permanent = true;
   // These diagnostics originate before CreateSandbox in the pinned CLI.
   // The provisioning marker is emitted only after allocation succeeds; never
   // interpret a subsequent watch/runtime error as definitive rejection.
@@ -43,7 +46,7 @@ export function commandFailure(
     )
   ) {
     reason =
-      'policy YAML is invalid; check the OpenShell v0.1.2 policy schema (version, filesystem_policy, process and network_policies)';
+      'policy YAML is invalid; check the OpenShell v0.1.7 policy schema (version, filesystem_policy, process and network_policies)';
     allocationImpossible = true;
   } else if (
     /failed to (?:inspect|read) sandbox policy|sandbox policy source is not a regular file/i.test(
@@ -72,7 +75,7 @@ export function commandFailure(
     /unexpected argument|unrecognized option|invalid value.*for.*--/i.test(text)
   ) {
     reason =
-      'CLI rejected an argument; install OpenShell v0.1.2 and check resource quantities';
+      'CLI rejected an argument; install OpenShell v0.1.7 and check resource quantities';
     allocationImpossible = true;
   } else if (/HOME is not set/i.test(text)) {
     reason =
@@ -88,9 +91,12 @@ export function commandFailure(
   } else if (/permission denied|operation not permitted/i.test(text)) {
     reason =
       'permission denied; check worker access to configHome, TLS files and policy files';
-  } else if (/certificate|invalid peer|unknown issuer/i.test(text)) {
+  } else if (/TLS|SSL|certificate|invalid peer|unknown issuer/i.test(text)) {
     reason =
       'TLS verification failed; check gateway hostname and client/CA certificates';
+  } else if (/unauthenticated|unauthorized|authentication/i.test(text)) {
+    reason =
+      'gateway authentication failed; check the worker gateway credentials';
   } else if (
     /connection refused|connect error|dns error|failed to lookup|transport error/i.test(
       text,
@@ -98,9 +104,17 @@ export function commandFailure(
   ) {
     reason =
       'gateway connection failed; check DNS, gateway availability and network access';
-  } else if (/unauthenticated|unauthorized|authentication/i.test(text)) {
+    retryable = true;
+  } else if (
+    /status: (?:Unavailable|ResourceExhausted|DeadlineExceeded)|code: (?:Unavailable|ResourceExhausted|DeadlineExceeded)/i.test(
+      text,
+    )
+  ) {
     reason =
-      'gateway authentication failed; check the worker gateway credentials';
+      'gateway temporarily unavailable or throttled; retry within the operation budget';
+    retryable = true;
+  } else {
+    permanent = false;
   }
   return new OpenShellCommandError(
     `OpenShell sandbox ${operation} ${result.timedOut ? 'timed out' : `failed (exit ${result.exitCode ?? 'none'}${result.signal ? `, signal ${result.signal}` : ''})`}; gateway=${c.gateway}, workspace=${c.workspace}, configHome=${c.configHome ?? 'inherited/default'}: ${reason}`,
@@ -110,6 +124,7 @@ export function commandFailure(
       result.exitCode !== null &&
       allocationImpossible &&
       !allocationObserved,
+    retryable || (result.timedOut && !permanent),
   );
 }
 export type Runner = (

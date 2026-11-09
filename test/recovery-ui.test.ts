@@ -123,6 +123,19 @@ test('legacy missing connection fields fall back to environment or existing reco
   assert.equal(draft.workspace, 'custom');
 });
 
+test('recovery form prefers an original recovery entry over edited environment scope', () => {
+  const pending = fixture();
+  pending.lease.metadata = { pluginKey: pluginId };
+  const entry = {
+    environmentId: 'env',
+    gateway: 'recovered',
+    workspace: 'original',
+    configHome: '/moved/config',
+    rejectedAttemptIds: [],
+  };
+  assert.deepEqual(recoveryDraft(pending, { cleanupRecovery: [entry] }), entry);
+});
+
 test('rejected creation confirmation requires an exact recorded ownership envelope', () => {
   const pending = fixture();
   assert.equal(creationAttempt(pending), attemptId);
