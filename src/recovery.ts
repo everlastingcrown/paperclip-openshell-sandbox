@@ -1,3 +1,7 @@
+import {
+  parseMissingSandboxStopRecovery,
+  missingSandboxStopRecoverySchema,
+} from './missing-sandbox-stop-recovery.js';
 import { attemptPattern, isAttemptId, isScopeName } from './validation.js';
 import { parseConfig } from './config.js';
 export interface CleanupRecovery {
@@ -55,6 +59,7 @@ export function cleanupConnection(
 export function parseCleanupRecovery(
   config: Record<string, unknown>,
 ): CleanupRecovery[] {
+  parseMissingSandboxStopRecovery(config);
   if (
     config.showRecoveryPage !== undefined &&
     typeof config.showRecoveryPage !== 'boolean'
@@ -119,6 +124,7 @@ export const recoveryConfigSchema = {
   type: 'object',
   additionalProperties: false,
   properties: {
+    missingSandboxStopRecovery: missingSandboxStopRecoverySchema,
     showRecoveryPage: {
       type: 'boolean',
       title: 'Show OpenShell recovery page',

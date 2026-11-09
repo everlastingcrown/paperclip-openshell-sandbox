@@ -37,7 +37,12 @@ import {
   parseCleanupRecovery,
   type CleanupRecovery,
 } from './recovery.js';
-import { SandboxClient, validateExecution } from './sandbox-client.js';
+import { parseMissingSandboxStopRecovery } from './missing-sandbox-stop-recovery.js';
+import {
+  SandboxClient,
+  SandboxMissingError,
+  validateExecution,
+} from './sandbox-client.js';
 import { acquire } from './acquisition.js';
 import { remaining } from './deadline.js';
 export class OpenShellProvider {
@@ -390,7 +395,42 @@ export class OpenShellProvider {
     const { c } = await this.cleanupConfig(p);
     const i = identity(p, p.providerLeaseId, p.leaseMetadata, c);
     const deadline = this.client.clock.now() + c.timeoutMs;
-    await this.client.transition(c, i, 'Stopped', deadline);
+    // Temporary compatibility override: only confirmed absence may bypass the
+    // host's stopped-only recovery gate. Never persist authorization in a lease.
+    try {
+      await this.client.transition(c, i, 'Stopped', deadline);
+    } catch (error) {
+      if (!(error instanceof SandboxMissingError)) throw error;
+      if (p.leaseMetadata?.failedCreateCleanup !== undefined) throw error;
+      let authorized = false;
+      try {
+        const entries = parseMissingSandboxStopRecovery(
+          (await this.pluginConfig?.(p.companyId)) ?? {},
+        );
+        authorized = entries.some(
+          (entry) =>
+            entry.environmentId === p.environmentId &&
+            entry.providerLeaseId === i.id &&
+            entry.attemptId === i.labels['paperclip-attempt'],
+        );
+      } catch {
+        // Unavailable or invalid settings cannot authorize an override.
+      }
+      if (!authorized) throw error;
+      remaining(deadline, this.client.clock);
+      log(
+        this.logger,
+        'warn',
+        'OpenShell missing sandbox accepted as stopped',
+        {
+          companyId: p.companyId,
+          environmentId: p.environmentId,
+          sandboxId: i.id,
+          sandboxName: i.name,
+          attemptId: i.labels['paperclip-attempt'],
+        },
+      );
+    }
     return { providerLeaseId: p.providerLeaseId!, state: 'stopped' };
   }
   async destroy(p: Release): Promise<PluginEnvironmentTerminationReceipt> {

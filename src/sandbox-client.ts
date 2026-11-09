@@ -18,6 +18,12 @@ import {
   systemClock,
   type Clock,
 } from './deadline.js';
+export class SandboxMissingError extends Error {
+  constructor() {
+    super('Sandbox missing');
+  }
+}
+
 export class SandboxClient {
   logger?: PluginLogger;
   private readonly inspections = new Map<
@@ -128,7 +134,7 @@ export class SandboxClient {
     while (this.clock.now() < deadline) {
       const found = await this.inspectRecovery(c, i.name, deadline);
       if (!found) {
-        if (state !== 'missing') throw new Error('Sandbox missing');
+        if (state !== 'missing') throw new SandboxMissingError();
         if (i.id) return;
         if (++unseen === 3) throw new Error('Allocation outcome uncertain');
         await this.backoff(unseen, deadline);
@@ -302,7 +308,7 @@ export class SandboxClient {
       }
       if (!s) {
         if (state === 'missing') return;
-        if (state !== 'Ready') throw new Error('Sandbox missing');
+        if (state !== 'Ready') throw new SandboxMissingError();
       }
       if (s) verify(s, i);
       log(this.logger, 'debug', 'OpenShell sandbox state', {

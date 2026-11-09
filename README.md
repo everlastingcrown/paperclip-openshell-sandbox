@@ -255,7 +255,7 @@ can add further sandbox work; this change does not suppress security audit logs.
 
 The draft probe checks gateway access without allocating anything. Paperclip's **Test Provider** creates a fresh sandbox with `reuseLease: false`, then releases it. This provider deletes test sandboxes, including those with Paperclip's `archiveOnRelease` flag.
 
-If acquisition fails after creation, cleanup gets a fresh budget of up to 30 seconds, separate from the failed command. Ordinary destruction uses the same routine and is idempotent for an already deleted sandbox. Stop and `stop_and_retain` require the confirmed `Stopped` state and preserve files; a successful CLI exit alone is insufficient.
+If acquisition fails after creation, cleanup gets a fresh budget of up to 30 seconds, separate from the failed command. Ordinary destruction uses the same routine and is idempotent for an already deleted sandbox. By default, stop and `stop_and_retain` require the confirmed `Stopped` state and preserve files; a successful CLI exit alone is insufficient. The advanced missing-sandbox override below is an explicit exception for exact allocations whose files are already unavailable.
 
 Recovery lookups and lifecycle control commands retry recognized connection failures, gateway unavailability, throttling, and timeouts up to three attempts, with 250 ms and 500 ms backoff within the operation budget. Each CLI invocation uses at most 10 seconds or half the remaining budget, reserving time for confirmation. Authentication, TLS, configuration, malformed response, ownership, and unknown failures require correction before retrying. An interrupted paginated lookup restarts from its first page. After an ambiguous start, resume, stop, or delete failure, the provider checks the allocation's identity and current state before repeating the command. Create and workload execution are never replayed automatically.
 
@@ -300,6 +300,28 @@ For advanced recovery, including old pending cleanup records, plugin configurati
 ```
 
 Only add an attempt UUID to `rejectedAttemptIds` after gateway/CLI evidence establishes that creation was rejected. A successful scoped absence check is still required. When a late allocation is discovered without a persisted sandbox ID, the provider returns its observed identity for Paperclip to persist before the next teardown attempt.
+
+### Advanced: accept a missing sandbox as stopped
+
+If Paperclip repeatedly requests a stop for an allocation that no longer exists, the company plugin setting **Advanced: accept missing sandboxes as stopped** provides a temporary compatibility override. It is disabled by default. Adding an entry acknowledges that the sandbox's workspace files are unavailable and authorizes reporting that exact missing allocation as `stopped`, satisfying Paperclip's stop gate. This does not restore files or guarantee task recovery: subsequent workspace export or resume may still fail.
+
+```json
+{
+  "missingSandboxStopRecovery": [
+    {
+      "environmentId": "paperclip-environment-id",
+      "providerLeaseId": "exact-openshell-allocation-id",
+      "attemptId": "00000000-0000-0000-0000-000000000000"
+    }
+  ]
+}
+```
+
+Use the pending lease's Paperclip environment ID and provider lease ID. Copy the creation attempt UUID from its saved `leaseMetadata.openshell.labels["paperclip-attempt"]` (or `metadata.openshell.labels` in the lease API response). Do not use the placeholder UUID above. Each entry applies only to the selected company and the exact environment, allocation ID, and creation attempt; new allocations need separate authorization. This setting is independent of `cleanupRecovery` and applies to both reusable and ephemeral sandboxes.
+
+Saving does not trigger cleanup. On Paperclip's next stop retry, the plugin validates the saved identity and completes a successful scoped lookup before applying the override. Authentication, transport, ownership, pagination, and timeout failures remain errors. An existing sandbox still requires confirmed `Stopped`; the override never deletes it. Each use emits an **OpenShell missing sandbox accepted as stopped** warning.
+
+Remove the entry, clear the array, or remove `missingSandboxStopRecovery` to disable future overrides. Authorization is read on every stop invocation and is never copied into lease metadata. Removing settings does not reverse receipts already returned to Paperclip. Keep this workaround limited to affected leases and remove entries after recovery; no custom recovery-page action or Paperclip change is required.
 
 ## Migration from the previous canary
 
