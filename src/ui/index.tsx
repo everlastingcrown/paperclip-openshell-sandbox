@@ -43,18 +43,30 @@ function useRecoveryPageSettings() {
   return query;
 }
 
+// Sidebar slots can remount during navigation. Keep confirmed visibility for
+// each company across those mounts and transient settings refresh failures.
+const sidebarVisibility = new Map<string, boolean>();
+
 export function RecoveryLink() {
   const navigation = useHostNavigation();
   const { pathname } = useHostLocation();
   const { companyId } = useHostContext();
   const settings = useRecoveryPageSettings();
-  if (
-    !companyId ||
-    settings.loading ||
-    settings.error ||
-    !settings.data?.showRecoveryPage
-  )
-    return null;
+  const confirmed =
+    !settings.loading && !settings.error
+      ? settings.data?.showRecoveryPage
+      : undefined;
+  useEffect(() => {
+    if (companyId && typeof confirmed === 'boolean')
+      sidebarVisibility.set(companyId, confirmed);
+  }, [companyId, confirmed]);
+  const visible =
+    typeof confirmed === 'boolean'
+      ? confirmed
+      : companyId
+        ? sidebarVisibility.get(companyId)
+        : false;
+  if (!companyId || !visible) return null;
   const active = pathname === navigation.resolveHref('/openshell-recovery');
   return (
     <a

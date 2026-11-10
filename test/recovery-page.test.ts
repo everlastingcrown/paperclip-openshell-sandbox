@@ -305,8 +305,25 @@ test('guided recovery page explains, prefills, saves and refreshes without runni
     );
 
     await t.test(
-      'sidebar hides when disabled, loading, unavailable or outside a company',
+      'sidebar preserves confirmed visibility through refreshes, failures and remounts',
       async () => {
+        const link = container.querySelector('a');
+        settingsLoading = true;
+        await act(async () => root.render(createElement(RecoveryLink)));
+        assert.equal(container.querySelector('a'), link);
+        pathname = '/COMPANY/settings/plugins';
+        await act(async () => root.render(createElement(RecoveryLink)));
+        assert.equal(container.querySelector('a'), link);
+        settingsLoading = false;
+        settingsError = true;
+        await act(async () => root.render(createElement(RecoveryLink)));
+        assert.equal(container.querySelector('a'), link);
+        await act(async () => root.render(null));
+        await act(async () => root.render(createElement(RecoveryLink)));
+        assert.ok(container.querySelector('a'));
+
+        // A confirmed opt-out takes effect and survives unavailable settings.
+        settingsError = false;
         config.showRecoveryPage = false;
         await act(async () => root.render(createElement(RecoveryLink)));
         assert.equal(container.querySelector('a'), null);
@@ -319,6 +336,21 @@ test('guided recovery page explains, prefills, saves and refreshes without runni
         await act(async () => root.render(createElement(RecoveryLink)));
         assert.equal(container.querySelector('a'), null);
         settingsError = false;
+        await act(async () => root.render(createElement(RecoveryLink)));
+        assert.ok(container.querySelector('a'));
+
+        // An unknown company must not inherit another company's visibility.
+        companyId = 'unseen-company';
+        settingsLoading = true;
+        await act(async () => root.render(createElement(RecoveryLink)));
+        assert.equal(container.querySelector('a'), null);
+        settingsLoading = false;
+        settingsError = true;
+        await act(async () => root.render(createElement(RecoveryLink)));
+        assert.equal(container.querySelector('a'), null);
+        companyId = 'company';
+        await act(async () => root.render(createElement(RecoveryLink)));
+        assert.ok(container.querySelector('a'));
         companyId = null;
         await act(async () => root.render(createElement(RecoveryLink)));
         assert.equal(container.querySelector('a'), null);
